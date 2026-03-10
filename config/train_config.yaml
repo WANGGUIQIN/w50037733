@@ -1,0 +1,69 @@
+# RoboBrain-3DGS Training Configuration
+
+# === Model ===
+model:
+  base_model: "/home/w50037733/models/RoboBrain2.5-8B-NV"
+  num_gaussians: 1024
+  sh_degree: 2
+  num_gs_tokens: 64
+  gs_encoder_dim: 512
+  freeze_vision_encoder: true
+  torch_dtype: "bfloat16"
+
+# === Fine-tuning Mode ===
+# "lora" or "full"
+finetune_mode: "lora"
+
+# === LoRA Configuration ===
+# Following RoboBrain's A-LoRA / T-LoRA strategy
+lora:
+  r: 16
+  lora_alpha: 32
+  lora_dropout: 0.05
+  target_modules:
+    - "q_proj"
+    - "v_proj"
+    - "k_proj"
+    - "o_proj"
+  bias: "none"
+  task_type: "CAUSAL_LM"
+
+# === Data ===
+data:
+  rlbench_root: "/home/w50037733/robobrain_3dgs/data/rlbench_sample"
+  droid_root: "/home/w50037733/robobrain_3dgs/data/droid_sample"
+  image_size: 256
+  camera: "front"
+  # Data mixing ratio: robotic:general = 4:6 (following RoboBrain paper)
+  robotic_ratio: 0.4
+  max_frames: -1  # -1 for all available
+
+# === Training ===
+training:
+  output_dir: "/home/w50037733/robobrain_3dgs/outputs"
+  num_epochs: 3
+  per_device_batch_size: 1
+  gradient_accumulation_steps: 4
+  learning_rate: 2.0e-4
+  lr_3d_branch: 1.0e-3  # Higher LR for 3D branch (new parameters)
+  weight_decay: 0.01
+  warmup_ratio: 0.05
+  max_grad_norm: 1.0
+  logging_steps: 10
+  save_steps: 500
+  eval_steps: 100
+  seed: 42
+
+# === Rendering Loss (3DGS auxiliary supervision) ===
+rendering_loss:
+  enabled: true
+  render_size: 64  # Low-res rendering for speed
+  lambda_l1: 0.8
+  lambda_ssim: 0.2
+  lambda_depth: 0.5
+  lambda_opacity: 0.01
+  weight: 0.1  # Weight relative to LM loss
+
+# === DeepSpeed ===
+deepspeed:
+  config: "/home/w50037733/robobrain_3dgs/config/deepspeed_zero2.json"
