@@ -11,7 +11,7 @@ import time
 import torch
 
 sys.path.insert(0, "/home/w50037733/robobrain_3dgs")
-os.environ["HF_TOKEN"] = ""
+os.environ.setdefault("HF_TOKEN", os.getenv("HF_TOKEN", ""))
 
 from transformers import AutoProcessor
 from models.robobrain_vlm import RoboBrain3DGS_VLM
