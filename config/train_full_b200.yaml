@@ -1,0 +1,67 @@
+# RoboBrain-3DGS Full Fine-tuning — B200 Optimized (2x B200 192GB)
+#
+# Usage:
+#   deepspeed --num_gpus=2 train.py --config config/train_full_b200.yaml
+#
+# Memory estimate per GPU: ~92GB / 192GB (48%)
+# Global batch size: 4 * 2 * 4 = 32
+
+# === Model ===
+model:
+  base_model: "/home/w50037733/models/RoboBrain2.5-8B-NV"
+  num_gaussians: 1024
+  sh_degree: 2
+  num_gs_tokens: 64
+  gs_encoder_dim: 512
+  freeze_vision_encoder: true
+  torch_dtype: "bfloat16"
+
+# === Fine-tuning Mode ===
+finetune_mode: "full"
+
+# === Full Fine-tuning Configuration ===
+full_finetune:
+  unfreeze_llm_layers: -1              # All 36 layers
+  unfreeze_lm_head: true
+  gradient_checkpointing: false        # B200 has 192GB, no need (saves 30% compute)
+
+# === Data ===
+data:
+  rlbench_root: "data/rlbench_sample"
+  droid_root: "data/droid_sample"
+  image_size: 256
+  camera: "front"
+  max_frames: -1
+
+# === Training ===
+training:
+  output_dir: "outputs/full_b200"
+  num_epochs: 5
+  per_device_batch_size: 4             # 4x larger than 5090
+  gradient_accumulation_steps: 4       # global_batch = 4 * 2 * 4 = 32
+  learning_rate: 5.0e-5
+  lr_3d_branch: 1.0e-3
+  weight_decay: 0.01
+  warmup_ratio: 0.1                    # Longer warmup for full fine-tuning stability
+  max_grad_norm: 1.0
+  logging_steps: 10
+  save_steps: 500
+  eval_steps: 100
+  seed: 42
+  use_fused_adam: true                 # FusedAdam: GPU fused kernel, ~10% faster
+
+# === Rendering Loss ===
+rendering_loss:
+  enabled: true
+  render_size: 128                     # 2x larger than 5090
+  lambda_l1: 0.8
+  lambda_ssim: 0.2
+  lambda_depth: 0.5
+  lambda_opacity: 0.01
+  weight: 0.1
+
+# === DeepSpeed ===
+# ZeRO-2: partition optimizer + gradients (no CPU offload needed on B200)
+# Memory per GPU: model 16G + optimizer 48G/2 + gradients 8G + activations ~20G ≈ 68GB
+deepspeed:
+  config: "config/deepspeed_zero2_b200.json"

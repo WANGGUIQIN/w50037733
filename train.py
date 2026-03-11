@@ -169,8 +169,10 @@ def build_model_lora(cfg: dict, local_rank: int):
     lora_cfg = cfg["lora"]
     dtype = getattr(torch, model_cfg.get("torch_dtype", "bfloat16"))
 
-    # DeepSpeed handles device distribution; otherwise use device_map="auto"
-    device_map = "auto" if local_rank < 0 else None
+    # DeepSpeed: load to CPU first, let deepspeed.initialize() handle device placement.
+    # Single-GPU: use device_map="auto" for automatic GPU placement.
+    use_deepspeed = local_rank >= 0
+    device_map = None if use_deepspeed else "auto"
 
     model = RoboBrain3DGS_VLM.from_pretrained(
         model_path=model_cfg["base_model"],
@@ -184,10 +186,7 @@ def build_model_lora(cfg: dict, local_rank: int):
         device_map=device_map,
     )
 
-    if local_rank >= 0:
-        model = model.to(f"cuda:{local_rank}")
-
-    # Apply LoRA
+    # Apply LoRA (on CPU if DeepSpeed, on GPU otherwise)
     from peft import LoraConfig, get_peft_model
 
     lora_config = LoraConfig(
@@ -210,7 +209,8 @@ def build_model_full(cfg: dict, local_rank: int):
     full_cfg = cfg.get("full_finetune", {})
     dtype = getattr(torch, model_cfg.get("torch_dtype", "bfloat16"))
 
-    device_map = "auto" if local_rank < 0 else None
+    use_deepspeed = local_rank >= 0
+    device_map = None if use_deepspeed else "auto"
 
     model = RoboBrain3DGS_VLM.from_pretrained(
         model_path=model_cfg["base_model"],
@@ -223,9 +223,6 @@ def build_model_full(cfg: dict, local_rank: int):
         torch_dtype=dtype,
         device_map=device_map,
     )
-
-    if local_rank >= 0:
-        model = model.to(f"cuda:{local_rank}")
 
     # Partial layer unfreezing (optional: freeze first N layers to save memory)
     unfreeze_layers = full_cfg.get("unfreeze_llm_layers", -1)
@@ -255,6 +252,21 @@ def build_model_full(cfg: dict, local_rank: int):
     return model
 
 
+def _needs_cpu_adam(cfg: dict) -> bool:
+    """Check if DeepSpeed CPU offload is enabled, requiring DeepSpeedCPUAdam."""
+    ds_cfg_path = cfg.get("deepspeed", {}).get("config")
+    if not ds_cfg_path or not isinstance(ds_cfg_path, str):
+        return False
+    try:
+        import json
+        with open(ds_cfg_path) as f:
+            ds_cfg = json.load(f)
+        offload = ds_cfg.get("zero_optimization", {}).get("offload_optimizer", {})
+        return offload.get("device", "none") == "cpu"
+    except Exception:
+        return False
+
+
 def build_optimizer(model: nn.Module, cfg: dict, mode: str):
     """Build optimizer with per-group learning rates.
 
@@ -262,6 +274,9 @@ def build_optimizer(model: nn.Module, cfg: dict, mode: str):
         3d_branch: DepthToGaussian + GS Encoder + Projector (always highest LR)
         lora:      LoRA adapters (mode=lora only)
         llm:       Full LLM parameters (mode=full only)
+
+    Uses DeepSpeedCPUAdam when ZeRO-3 CPU offload is enabled
+    (required by DeepSpeed for efficient CPU-side optimizer steps).
     """
     train_cfg = cfg["training"]
 
@@ -309,10 +324,26 @@ def build_optimizer(model: nn.Module, cfg: dict, mode: str):
     total_all = sum(p.numel() for p in model.parameters())
     print(f"  Trainable: {total / 1e6:.1f}M / {total_all / 1e6:.1f}M ({total / total_all * 100:.2f}%)")
 
-    optimizer = torch.optim.AdamW(
-        groups,
-        weight_decay=train_cfg.get("weight_decay", 0.01),
-    )
+    # Select optimizer based on hardware and offload config
+    use_cpu_adam = _needs_cpu_adam(cfg)
+    use_fused = train_cfg.get("use_fused_adam", False)
+    wd = train_cfg.get("weight_decay", 0.01)
+
+    if use_cpu_adam:
+        from deepspeed.ops.adam import DeepSpeedCPUAdam
+        optimizer = DeepSpeedCPUAdam(groups, weight_decay=wd)
+        print(f"  Optimizer: DeepSpeedCPUAdam (CPU offload)")
+    elif use_fused:
+        try:
+            from deepspeed.ops.adam import FusedAdam
+            optimizer = FusedAdam(groups, weight_decay=wd)
+            print(f"  Optimizer: FusedAdam (GPU fused kernel)")
+        except ImportError:
+            optimizer = torch.optim.AdamW(groups, weight_decay=wd)
+            print(f"  Optimizer: AdamW (FusedAdam not available, fallback)")
+    else:
+        optimizer = torch.optim.AdamW(groups, weight_decay=wd)
+        print(f"  Optimizer: AdamW")
     return optimizer
 
 
@@ -553,7 +584,52 @@ def train(cfg: dict, args):
     processor = AutoProcessor.from_pretrained(cfg["model"]["base_model"])
     tokenizer = processor.tokenizer
 
-    # -- Rendering loss --
+    # -- Training config (needed before DeepSpeed init) --
+    grad_accum = train_cfg.get("gradient_accumulation_steps", 4)
+
+    # -- Scheduler (must be created before DeepSpeed wraps the optimizer) --
+    total_steps = len(dataloader) * train_cfg.get("num_epochs", 3)
+    scheduler = build_scheduler(optimizer, train_cfg, total_steps)
+
+    # -- DeepSpeed --
+    ds_config_path = args.deepspeed or cfg.get("deepspeed", {}).get("config")
+    ds_config = None
+    if ds_config_path and local_rank >= 0:
+        import deepspeed
+        import json
+
+        # Load DS config and inject batch size parameters
+        # ('auto' values only work with HF Trainer, not deepspeed.initialize)
+        if isinstance(ds_config_path, str):
+            with open(ds_config_path) as f:
+                ds_config = json.load(f)
+        else:
+            ds_config = ds_config_path
+
+        micro_bs = train_cfg.get("per_device_batch_size", 1)
+        world_size = int(os.environ.get("WORLD_SIZE", torch.cuda.device_count()))
+        ds_config["train_micro_batch_size_per_gpu"] = micro_bs
+        ds_config["gradient_accumulation_steps"] = grad_accum
+        ds_config["train_batch_size"] = micro_bs * world_size * grad_accum
+
+        # Pass scheduler to DS so it manages stepping at accumulation boundaries
+        model, optimizer, _, scheduler = deepspeed.initialize(
+            model=model,
+            optimizer=optimizer,
+            lr_scheduler=scheduler,
+            config=ds_config,
+            model_parameters=[p for p in model.parameters() if p.requires_grad],
+        )
+        device = model.device
+        if is_main:
+            print(f"\n[DeepSpeed] Initialized on {world_size} GPUs")
+            print(f"  ZeRO stage: {ds_config.get('zero_optimization', {}).get('stage', 0)}")
+            print(f"  Micro batch: {micro_bs}, Grad accum: {grad_accum}, Global batch: {ds_config['train_batch_size']}")
+    else:
+        inner = model.module if hasattr(model, "module") else model
+        device = next(inner.parameters()).device
+
+    # -- Rendering loss (after DeepSpeed init so model is on correct device) --
     render_loss_fn = None
     if render_cfg.get("enabled", False):
         render_size = render_cfg.get("render_size", 64)
@@ -564,33 +640,10 @@ def train(cfg: dict, args):
             lambda_opacity=render_cfg.get("lambda_opacity", 0.01),
             image_size=(render_size, render_size),
         )
-        inner = model.module if hasattr(model, "module") else model
-        embed_device = next(inner.depth_to_gaussian.parameters()).device
-        render_loss_fn = render_loss_fn.to(embed_device)
+        render_loss_fn = render_loss_fn.to(device)
         if is_main:
             print(f"\n[Rendering Loss] {render_size}x{render_size}, weight={render_cfg.get('weight', 0.1)}")
     render_weight = render_cfg.get("weight", 0.1) if render_loss_fn else 0.0
-
-    # -- DeepSpeed --
-    ds_config = args.deepspeed or cfg.get("deepspeed", {}).get("config")
-    if ds_config and local_rank >= 0:
-        import deepspeed
-        model, optimizer, _, _ = deepspeed.initialize(
-            model=model,
-            optimizer=optimizer,
-            config=ds_config,
-            model_parameters=[p for p in model.parameters() if p.requires_grad],
-        )
-        device = model.device
-        if is_main:
-            print(f"\n[DeepSpeed] Initialized on {torch.cuda.device_count()} GPUs")
-    else:
-        inner = model.module if hasattr(model, "module") else model
-        device = next(inner.parameters()).device
-
-    # -- Scheduler --
-    total_steps = len(dataloader) * train_cfg.get("num_epochs", 3)
-    scheduler = build_scheduler(optimizer, train_cfg, total_steps)
 
     # -- Resume --
     start_step = 0
@@ -599,8 +652,7 @@ def train(cfg: dict, args):
             print(f"\n[Resume] {args.resume}")
         start_step = load_checkpoint(model, optimizer, scheduler, args.resume, mode, str(device))
 
-    # -- Training config --
-    grad_accum = train_cfg.get("gradient_accumulation_steps", 4)
+    # -- Training config (continued) --
     max_grad_norm = train_cfg.get("max_grad_norm", 1.0)
     logging_steps = train_cfg.get("logging_steps", 10)
     save_steps = train_cfg.get("save_steps", 500)
@@ -644,6 +696,8 @@ def train(cfg: dict, args):
             if ds_config and local_rank >= 0:
                 model.backward(loss)
                 model.step()
+                # Scheduler is managed by DeepSpeed (passed via lr_scheduler=)
+                # It auto-steps at gradient accumulation boundaries
             else:
                 (loss / grad_accum).backward()
                 if (step + 1) % grad_accum == 0:
