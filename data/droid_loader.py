@@ -181,11 +181,19 @@ class DROIDDataset(Dataset):
         intrinsics[1, 2] *= scale_y
         intrinsics = torch.from_numpy(intrinsics)
 
+        # DROID has no ground-truth affordance annotations.
+        # Use a neutral placeholder so the LLM at least learns the output format.
+        target = (
+            "affordance: [0.50, 0.50]. "
+            "constraint: gripper_width=0.08, approach=[0.00, 0.00, -1.00]."
+        )
+
         return {
             "rgb": rgb,
             "depth": depth,
             "intrinsics": intrinsics,
             "prompt": DEFAULT_PROMPT,
+            "target": target,
         }
 
 

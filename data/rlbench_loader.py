@@ -9,6 +9,7 @@ with near=0.01, far=5.0 (CoppeliaSim defaults).
 """
 
 import os
+import pickle
 from pathlib import Path
 
 import numpy as np
@@ -17,24 +18,54 @@ from PIL import Image
 from torch.utils.data import Dataset
 
 
-# CoppeliaSim default camera intrinsics for RLBench (128x128 images)
-# These are approximate; actual values depend on the camera FOV setting.
-# RLBench uses FOV ~60 degrees -> fx = fy = W / (2 * tan(FOV/2))
-RLBENCH_INTRINSICS_128 = {
-    "fx": 128 / (2 * np.tan(np.radians(30))),  # ~110.85
-    "fy": 128 / (2 * np.tan(np.radians(30))),
-    "cx": 64.0,
-    "cy": 64.0,
+# -------------------------------------------------------------------------
+# Stub unpickler: lets us load RLBench pkl files without installing rlbench
+# -------------------------------------------------------------------------
+
+class _StubMeta(type):
+    def __new__(mcs, name, bases, ns):
+        return super().__new__(mcs, name, (object,), ns)
+
+
+def _make_stub(module, name):
+    return _StubMeta(name, (object,), {
+        "__module__": module,
+        "__init__": lambda self, *a, **kw: self.__dict__.update({"_args": a, **kw}),
+        "__setstate__": lambda self, s: self.__dict__.update(
+            s if isinstance(s, dict) else {"_state": s}
+        ),
+    })
+
+
+class _RLBenchUnpickler(pickle.Unpickler):
+    def find_class(self, module, name):
+        try:
+            return super().find_class(module, name)
+        except (ModuleNotFoundError, AttributeError):
+            return _make_stub(module, name)
+
+
+# -------------------------------------------------------------------------
+# Constants
+# -------------------------------------------------------------------------
+
+# Native RLBench image resolution (used for pixel-coordinate normalisation)
+RLBENCH_NATIVE_SIZE = 128
+
+# Task description templates (fallback when variation_descriptions.pkl absent)
+TASK_PROMPTS = {
+    "close_jar": "close the jar",
+    "open_drawer": "open the drawer",
+    "slide_block": "slide the block to the target location",
+    "pick_up_cup": "pick up the cup from the table",
+    "default": "complete the manipulation task shown in the image",
 }
 
-# Task description templates for RLBench tasks
-TASK_PROMPTS = {
-    "close_jar": "Close the jar by placing the lid on top of it.",
-    "open_drawer": "Open the drawer by pulling the handle.",
-    "slide_block": "Slide the block to the target location.",
-    "pick_up_cup": "Pick up the cup from the table.",
-    "default": "Complete the manipulation task shown in the image.",
-}
+# Fallback target when episode observations are unavailable
+_FALLBACK_TARGET = (
+    "affordance: [0.50, 0.50]. "
+    "constraint: gripper_width=0.08, approach=[0.00, 0.00, -1.00]."
+)
 
 
 def decode_rlbench_depth(depth_rgb: np.ndarray, near: float = 0.01, far: float = 5.0) -> np.ndarray:
@@ -103,6 +134,7 @@ class RLBenchDataset(Dataset):
                             "rgb_path": str(rgb_file),
                             "depth_path": str(depth_file),
                             "task": task_name,
+                            "ep_dir": str(ep_dir),  # full path for pkl loading
                             "episode": ep_dir.name,
                             "frame": int(rgb_file.stem),
                         })
@@ -110,53 +142,169 @@ class RLBenchDataset(Dataset):
         if max_frames > 0:
             self.samples = self.samples[:max_frames]
 
-        # Build intrinsics
-        intr = RLBENCH_INTRINSICS_128
-        self.base_intrinsics = np.array([
-            [intr["fx"], 0, intr["cx"]],
-            [0, intr["fy"], intr["cy"]],
-            [0, 0, 1],
-        ], dtype=np.float32)
+        # LRU-style caches keyed by episode path
+        self._obs_cache: dict = {}
+        self._desc_cache: dict = {}
 
     def __len__(self) -> int:
         return len(self.samples)
 
+    # ------------------------------------------------------------------
+    # Private helpers
+    # ------------------------------------------------------------------
+
+    def _load_obs(self, ep_dir: str):
+        """Load and cache episode observations from low_dim_obs.pkl."""
+        if ep_dir in self._obs_cache:
+            return self._obs_cache[ep_dir]
+        pkl_path = Path(ep_dir) / "low_dim_obs.pkl"
+        if not pkl_path.exists():
+            self._obs_cache[ep_dir] = None
+            return None
+        try:
+            with open(pkl_path, "rb") as f:
+                demo = _RLBenchUnpickler(f).load()
+            self._obs_cache[ep_dir] = demo._observations
+            return demo._observations
+        except Exception:
+            self._obs_cache[ep_dir] = None
+            return None
+
+    def _load_variation_desc(self, ep_dir: str):
+        """Load and cache the first variation description string."""
+        if ep_dir in self._desc_cache:
+            return self._desc_cache[ep_dir]
+        pkl_path = Path(ep_dir) / "variation_descriptions.pkl"
+        if not pkl_path.exists():
+            self._desc_cache[ep_dir] = None
+            return None
+        try:
+            with open(pkl_path, "rb") as f:
+                descs = pickle.load(f)
+            desc = descs[0] if isinstance(descs, list) and descs else None
+            self._desc_cache[ep_dir] = desc
+            return desc
+        except Exception:
+            self._desc_cache[ep_dir] = None
+            return None
+
+    def _find_next_waypoint(self, obs_list: list, frame_idx: int):
+        """Return the next observation where the gripper state changes.
+
+        Falls back to the last observation if no state change occurs.
+        """
+        cur_open = obs_list[frame_idx].gripper_open
+        for i in range(frame_idx + 1, len(obs_list)):
+            if abs(obs_list[i].gripper_open - cur_open) > 0.3:
+                return obs_list[i]
+        return obs_list[-1]
+
+    def _project_world_to_image(
+        self,
+        xyz_world: np.ndarray,
+        extrinsics: np.ndarray,
+        intrinsics_raw: np.ndarray,
+    ) -> tuple:
+        """Project a world-frame 3-D point to normalised image coordinates.
+
+        CoppeliaSim stores intrinsics with negated fx/fy; we take absolute
+        values and apply the standard OpenCV projection formula.
+
+        Returns:
+            (u, v) each clamped to [0, 1].
+        """
+        p_cam = extrinsics @ np.array([*xyz_world, 1.0])
+        z = p_cam[2]
+        if z < 1e-3:
+            return 0.5, 0.5
+        fx = abs(float(intrinsics_raw[0, 0]))
+        fy = abs(float(intrinsics_raw[1, 1]))
+        cx = float(intrinsics_raw[0, 2])
+        cy = float(intrinsics_raw[1, 2])
+        u = float(np.clip((fx * p_cam[0] / z + cx) / RLBENCH_NATIVE_SIZE, 0.0, 1.0))
+        v = float(np.clip((fy * p_cam[1] / z + cy) / RLBENCH_NATIVE_SIZE, 0.0, 1.0))
+        return u, v
+
+    def _make_target(self, obs_list: list, frame_idx: int) -> str:
+        """Generate the affordance + constraint target string for one frame."""
+        wp_obs  = self._find_next_waypoint(obs_list, frame_idx)
+        cur_obs = obs_list[frame_idx]
+        cam = self.camera
+        extrinsics   = cur_obs.misc.get(f"{cam}_camera_extrinsics")
+        intrinsics_raw = cur_obs.misc.get(f"{cam}_camera_intrinsics")
+        if extrinsics is None or intrinsics_raw is None:
+            return _FALLBACK_TARGET
+
+        gx, gy, gz = float(wp_obs.gripper_pose[0]), float(wp_obs.gripper_pose[1]), float(wp_obs.gripper_pose[2])
+        u, v = self._project_world_to_image(np.array([gx, gy, gz]), extrinsics, intrinsics_raw)
+
+        width = 0.08 if float(wp_obs.gripper_open) > 0.5 else 0.00
+
+        approach = wp_obs.gripper_matrix[:3, 2].astype(np.float64)
+        approach = approach / (np.linalg.norm(approach) + 1e-8)
+
+        return (
+            f"affordance: [{u:.2f}, {v:.2f}]. "
+            f"constraint: gripper_width={width:.2f}, "
+            f"approach=[{approach[0]:.2f}, {approach[1]:.2f}, {approach[2]:.2f}]."
+        )
+
     def __getitem__(self, idx: int) -> dict:
         info = self.samples[idx]
 
-        # Load RGB
+        # --- RGB ---
         rgb_img = Image.open(info["rgb_path"]).convert("RGB")
-        orig_w, orig_h = rgb_img.size
         rgb_img = rgb_img.resize((self.image_size, self.image_size), Image.BILINEAR)
-        rgb = np.array(rgb_img).astype(np.float32) / 255.0  # [H, W, 3]
-        rgb = torch.from_numpy(rgb).permute(2, 0, 1)  # [3, H, W]
+        rgb = torch.from_numpy(
+            np.array(rgb_img).astype(np.float32) / 255.0
+        ).permute(2, 0, 1)  # [3, H, W]
 
-        # Load depth
+        # --- Depth ---
         depth_rgb = np.array(Image.open(info["depth_path"]).convert("RGB"))
-        depth_m = decode_rlbench_depth(depth_rgb)  # [h, w]
-        # Resize depth (nearest to avoid interpolation artifacts)
+        depth_m = decode_rlbench_depth(depth_rgb)
         depth_pil = Image.fromarray(depth_m, mode="F")
         depth_pil = depth_pil.resize((self.image_size, self.image_size), Image.NEAREST)
         depth = torch.from_numpy(np.array(depth_pil)).unsqueeze(0)  # [1, H, W]
 
-        # Scale intrinsics for resized image
-        scale_x = self.image_size / orig_w
-        scale_y = self.image_size / orig_h
-        intrinsics = self.base_intrinsics.copy()
-        intrinsics[0, 0] *= scale_x  # fx
-        intrinsics[0, 2] *= scale_x  # cx
-        intrinsics[1, 1] *= scale_y  # fy
-        intrinsics[1, 2] *= scale_y  # cy
-        intrinsics = torch.from_numpy(intrinsics)
+        # --- Intrinsics: use actual values from misc when available ---
+        obs_list = self._load_obs(info["ep_dir"])
+        frame_idx = info["frame"]
+        raw_intr = None
+        if obs_list is not None and frame_idx < len(obs_list):
+            raw_intr = obs_list[frame_idx].misc.get(f"{self.camera}_camera_intrinsics")
 
-        # Task prompt
-        prompt = TASK_PROMPTS.get(info["task"], TASK_PROMPTS["default"])
+        scale = self.image_size / RLBENCH_NATIVE_SIZE
+        if raw_intr is not None:
+            intr = np.array([
+                [abs(raw_intr[0, 0]) * scale, 0, raw_intr[0, 2] * scale],
+                [0, abs(raw_intr[1, 1]) * scale, raw_intr[1, 2] * scale],
+                [0, 0, 1],
+            ], dtype=np.float32)
+        else:
+            approx_fx = (RLBENCH_NATIVE_SIZE / (2 * np.tan(np.radians(30)))) * scale
+            intr = np.array([
+                [approx_fx, 0, self.image_size / 2],
+                [0, approx_fx, self.image_size / 2],
+                [0, 0, 1],
+            ], dtype=np.float32)
+        intrinsics = torch.from_numpy(intr)
+
+        # --- Prompt (prefer variation_descriptions.pkl) ---
+        desc = self._load_variation_desc(info["ep_dir"])
+        prompt = desc or TASK_PROMPTS.get(info["task"], TASK_PROMPTS["default"])
+
+        # --- Target (affordance + constraint from episode obs) ---
+        if obs_list is not None and frame_idx < len(obs_list):
+            target = self._make_target(obs_list, frame_idx)
+        else:
+            target = _FALLBACK_TARGET
 
         return {
             "rgb": rgb,
             "depth": depth,
             "intrinsics": intrinsics,
             "prompt": prompt,
+            "target": target,
             "task": info["task"],
             "episode": info["episode"],
             "frame": info["frame"],
@@ -170,11 +318,12 @@ def validate_rlbench_loader():
     print(f"RLBench dataset: {len(ds)} samples")
 
     sample = ds[0]
-    print(f"  RGB: {sample['rgb'].shape}, range=[{sample['rgb'].min():.3f}, {sample['rgb'].max():.3f}]")
-    print(f"  Depth: {sample['depth'].shape}, range=[{sample['depth'].min():.3f}, {sample['depth'].max():.3f}]m")
-    print(f"  Intrinsics: {sample['intrinsics'].shape}")
-    print(f"  Prompt: {sample['prompt']}")
-    print(f"  Task: {sample['task']}, Episode: {sample['episode']}, Frame: {sample['frame']}")
+    print(f"  RGB:       {sample['rgb'].shape}, range=[{sample['rgb'].min():.3f}, {sample['rgb'].max():.3f}]")
+    print(f"  Depth:     {sample['depth'].shape}, range=[{sample['depth'].min():.3f}, {sample['depth'].max():.3f}]m")
+    print(f"  Intrinsics:{sample['intrinsics']}")
+    print(f"  Prompt:    {sample['prompt']!r}")
+    print(f"  Target:    {sample['target']!r}")
+    print(f"  Task/Ep/Frame: {sample['task']}/{sample['episode']}/{sample['frame']}")
     return True
 
 

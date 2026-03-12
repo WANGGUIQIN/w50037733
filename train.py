@@ -102,6 +102,7 @@ def collate_fn(batch: list[dict]) -> dict:
         "depth": torch.stack([s["depth"] for s in batch]),
         "intrinsics": torch.stack([s["intrinsics"] for s in batch]),
         "prompts": [s["prompt"] for s in batch],
+        "targets": [s["target"] for s in batch],
     }
 
 
@@ -330,17 +331,23 @@ def build_optimizer(model: nn.Module, cfg: dict, mode: str):
     wd = train_cfg.get("weight_decay", 0.01)
 
     if use_cpu_adam:
-        from deepspeed.ops.adam import DeepSpeedCPUAdam
-        optimizer = DeepSpeedCPUAdam(groups, weight_decay=wd)
-        print(f"  Optimizer: DeepSpeedCPUAdam (CPU offload)")
+        try:
+            from deepspeed.ops.adam import DeepSpeedCPUAdam
+            optimizer = DeepSpeedCPUAdam(groups, weight_decay=wd)
+            print(f"  Optimizer: DeepSpeedCPUAdam (CPU offload)")
+        except (ImportError, RuntimeError, Exception) as e:
+            print(f"  WARNING: DeepSpeedCPUAdam failed ({e}), using AdamW.")
+            print(f"  Fix: export CUDA_HOME=$(python -c \"import torch.utils.cpp_extension; print(torch.utils.cpp_extension.CUDA_HOME)\")")
+            print(f"  Then: DS_BUILD_CPU_ADAM=1 pip install deepspeed --force-reinstall --no-cache-dir")
+            optimizer = torch.optim.AdamW(groups, weight_decay=wd)
     elif use_fused:
         try:
             from deepspeed.ops.adam import FusedAdam
             optimizer = FusedAdam(groups, weight_decay=wd)
             print(f"  Optimizer: FusedAdam (GPU fused kernel)")
-        except ImportError:
+        except (ImportError, RuntimeError, Exception) as e:
             optimizer = torch.optim.AdamW(groups, weight_decay=wd)
-            print(f"  Optimizer: AdamW (FusedAdam not available, fallback)")
+            print(f"  Optimizer: AdamW (FusedAdam failed: {e}, using fallback)")
     else:
         optimizer = torch.optim.AdamW(groups, weight_decay=wd)
         print(f"  Optimizer: AdamW")
@@ -367,6 +374,64 @@ def build_scheduler(optimizer, train_cfg: dict, total_steps: int):
 # Training step
 # ---------------------------------------------------------------------------
 
+def build_lm_inputs(
+    prompts: list[str],
+    targets: list[str],
+    tokenizer,
+    device: str,
+    max_length: int = 256,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    """Tokenise prompt+target and build labels that mask the prompt.
+
+    For each sample the full text is::
+        "Task: {prompt}\nAffordance: {target}"
+
+    Labels are set to -100 for all prompt tokens so LM loss is only
+    computed over the target (affordance + constraint) tokens.
+
+    Returns:
+        input_ids:      [B, L]
+        attention_mask: [B, L]
+        labels:         [B, L]  (-100 at prompt positions)
+    """
+    prompt_texts = [f"Task: {p}\nAffordance:" for p in prompts]
+    full_texts   = [f"{pt} {t}" for pt, t in zip(prompt_texts, targets)]
+
+    # Tokenise full sequences (pad to same length)
+    full_enc = tokenizer(
+        full_texts,
+        return_tensors="pt",
+        padding=True,
+        truncation=True,
+        max_length=max_length,
+    )
+    input_ids     = full_enc.input_ids.to(device)
+    attention_mask = full_enc.attention_mask.to(device)
+
+    # Tokenise only the prompt part to know where to stop masking.
+    # We tokenize WITHOUT the leading space before the target so the
+    # boundary is at the end of "Affordance:" (inclusive).
+    prompt_enc = tokenizer(
+        prompt_texts,
+        return_tensors="pt",
+        padding=True,
+        truncation=True,
+        max_length=max_length,
+    )
+    prompt_lens = attention_mask.new_tensor(
+        [int(m.sum()) for m in prompt_enc.attention_mask]
+    )  # [B] — number of non-pad tokens in each prompt
+
+    labels = input_ids.clone()
+    for i, plen in enumerate(prompt_lens):
+        labels[i, :plen] = -100   # mask prompt tokens
+
+    # Also mask padding positions
+    labels[attention_mask == 0] = -100
+
+    return input_ids, attention_mask, labels
+
+
 def train_step(
     model: nn.Module,
     batch: dict,
@@ -379,21 +444,16 @@ def train_step(
     inner = model.module if hasattr(model, "module") else model
     dtype = next(inner.parameters()).dtype
 
-    rgb = batch["rgb"].to(device=device, dtype=dtype)
-    depth = batch["depth"].to(device=device, dtype=dtype)
+    rgb        = batch["rgb"].to(device=device, dtype=dtype)
+    depth      = batch["depth"].to(device=device, dtype=dtype)
     intrinsics = batch["intrinsics"].to(device=device, dtype=dtype)
-    prompts = batch["prompts"]
+    prompts    = batch["prompts"]
+    targets    = batch["targets"]
 
-    # Tokenize
-    texts = [f"Task: {p} Affordance:" for p in prompts]
-    tokens = tokenizer(texts, return_tensors="pt", padding=True, truncation=True, max_length=256)
-    input_ids = tokens.input_ids.to(device)
-    attention_mask = tokens.attention_mask.to(device)
-
-    # Labels (mask prompt prefix)
-    labels = input_ids.clone()
-    mask_len = int(input_ids.shape[1] * 0.7)
-    labels[:, :mask_len] = -100
+    # Tokenise: compute LM loss only on target (affordance) tokens
+    input_ids, attention_mask, labels = build_lm_inputs(
+        prompts, targets, tokenizer, device
+    )
 
     # Forward
     outputs = inner(

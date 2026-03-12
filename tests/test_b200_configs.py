@@ -48,6 +48,9 @@ def create_batch(B=1):
         "depth": torch.rand(B, 1, 64, 64) * 2,
         "intrinsics": K,
         "prompts": ["pick up the red cup"] * B,
+        "targets": [
+            "affordance: [0.50, 0.45]. constraint: gripper_width=0.08, approach=[0.00, 0.00, -1.00]."
+        ] * B,
     }
 
 
