@@ -57,6 +57,11 @@ training:
   seed: 42
   use_fused_adam: true                 # FusedAdam: GPU fused kernel, ~10% faster
 
+# === Checkpoint ===
+checkpoint:
+  keep_last_n: 3
+  save_optimizer_state: true
+
 # === Rendering Loss ===
 rendering_loss:
   enabled: true

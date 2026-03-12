@@ -60,6 +60,14 @@ rendering_loss:
   lambda_opacity: 0.01
   weight: 0.1
 
+# === Checkpoint ===
+# Full fine-tuning: each checkpoint ~24 GB (8 GB weights + 16 GB Adam states)
+# keep_last_n=2 + best = 3 checkpoints max on disk (~72 GB)
+# Set save_optimizer_state: false to cut to ~24 GB total (no resume capability)
+checkpoint:
+  keep_last_n: 2
+  save_optimizer_state: true
+
 # === DeepSpeed ===
 # Full fine-tuning needs ZeRO-3 to shard model weights across GPUs
 deepspeed:

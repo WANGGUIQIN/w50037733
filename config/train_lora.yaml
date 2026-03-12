@@ -64,6 +64,12 @@ rendering_loss:
   lambda_opacity: 0.01
   weight: 0.1
 
+# === Checkpoint ===
+checkpoint:
+  keep_last_n: 3            # Keep only the 3 most recent step checkpoints
+                             # (best is always kept regardless)
+  save_optimizer_state: true # Set false to halve checkpoint size (can't resume)
+
 # === DeepSpeed ===
 deepspeed:
   config: "/home/w50037733/robobrain_3dgs/config/deepspeed_zero2.json"

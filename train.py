@@ -34,8 +34,10 @@ Usage:
 """
 
 import argparse
+import json
 import math
 import os
+import shutil
 import sys
 import time
 from pathlib import Path
@@ -490,106 +492,283 @@ def train_step(
 # Checkpointing
 # ---------------------------------------------------------------------------
 
-def save_checkpoint(model: nn.Module, optimizer, scheduler, step: int,
-                    save_dir: str, mode: str):
-    """Save checkpoint. Strategy depends on finetune mode.
+class CheckpointManager:
+    """Manages checkpoint saving with rotation, atomic writes, and best tracking.
 
-    LoRA:  Save adapter weights (~60MB) + 3D branch
-    Full:  Save full model state_dict or DeepSpeed engine state
+    Features:
+    - **Atomic writes**: saves to ``checkpoint-N.tmp/`` then renames, so a
+      crash mid-write never corrupts a valid checkpoint.
+    - **keep_last_n rotation**: automatically deletes the oldest step-level
+      checkpoints; the current best is always protected from deletion.
+    - **best/ symlink**: ``best/`` is a symlink to the best checkpoint
+      directory, so no data is duplicated.
+    - **metadata.json** per checkpoint: records step, epoch, loss, timestamp,
+      and whether optimizer state was saved.
+    - **Optional optimizer state**: set ``save_optimizer_state=False`` to skip
+      the ~16 GB Adam state for 8B full fine-tuning (saves disk; disables
+      exact resume).
+    - **Estimated disk usage** printed at each save.
     """
-    os.makedirs(save_dir, exist_ok=True)
-    inner = model.module if hasattr(model, "module") else model
 
-    # 1. Save 3D branch (always)
-    gs_state = {}
-    for name, param in inner.named_parameters():
-        if _is_3d_branch_param(name):
-            gs_state[name] = param.data.cpu()
-    torch.save(gs_state, os.path.join(save_dir, "3d_branch.pt"))
+    REGISTRY_FILE = "checkpoints.json"
 
-    # 2. Save VLM weights (mode-dependent)
-    if mode == "lora":
-        # PEFT save_pretrained saves only adapter weights
-        if hasattr(inner, "vlm") and hasattr(inner.vlm, "save_pretrained"):
-            inner.vlm.save_pretrained(os.path.join(save_dir, "lora_adapter"))
-    else:
-        # Full: save all trainable VLM parameters
-        vlm_state = {}
-        for name, param in inner.named_parameters():
-            if param.requires_grad and not _is_3d_branch_param(name):
-                vlm_state[name] = param.data.cpu()
-        torch.save(vlm_state, os.path.join(save_dir, "vlm_trainable.pt"))
+    def __init__(self, output_dir: str, keep_last_n: int = 3,
+                 save_optimizer_state: bool = True):
+        self.output_dir = Path(output_dir)
+        self.output_dir.mkdir(parents=True, exist_ok=True)
+        self.keep_last_n = keep_last_n
+        self.save_optimizer_state = save_optimizer_state
+        self._registry = self._load_registry()
 
-    # 3. Training state
-    train_state = {
-        "step": step,
-        "optimizer_state": optimizer.state_dict() if optimizer is not None else None,
-        "scheduler_state": scheduler.state_dict() if scheduler is not None else None,
-        "mode": mode,
-    }
-    torch.save(train_state, os.path.join(save_dir, "training_state.pt"))
-    print(f"  Checkpoint saved: {save_dir} (mode={mode})")
+    @classmethod
+    def from_config(cls, cfg: dict) -> "CheckpointManager":
+        """Build from training config dict."""
+        train_cfg = cfg.get("training", {})
+        ckpt_cfg  = cfg.get("checkpoint", {})
+        return cls(
+            output_dir          = train_cfg.get("output_dir", "outputs"),
+            keep_last_n         = ckpt_cfg.get("keep_last_n", 3),
+            save_optimizer_state= ckpt_cfg.get("save_optimizer_state", True),
+        )
 
+    # ------------------------------------------------------------------
+    # Registry helpers
+    # ------------------------------------------------------------------
 
-def load_checkpoint(model: nn.Module, optimizer, scheduler,
-                    ckpt_dir: str, mode: str, device: str):
-    """Load checkpoint and restore training state.
+    def _registry_path(self) -> Path:
+        return self.output_dir / self.REGISTRY_FILE
 
-    Returns:
-        step: the global step to resume from
-    """
-    inner = model.module if hasattr(model, "module") else model
+    def _load_registry(self) -> dict:
+        p = self._registry_path()
+        if p.exists():
+            with open(p) as f:
+                return json.load(f)
+        return {"checkpoints": [], "best": None}
 
-    # 1. Load 3D branch
-    gs_path = os.path.join(ckpt_dir, "3d_branch.pt")
-    if os.path.exists(gs_path):
-        gs_state = torch.load(gs_path, map_location=device, weights_only=True)
-        missing, unexpected = [], []
-        model_state = dict(inner.named_parameters())
-        for name, tensor in gs_state.items():
-            if name in model_state:
-                model_state[name].data.copy_(tensor)
-            else:
-                unexpected.append(name)
-        print(f"  3D branch loaded ({len(gs_state)} params, {len(unexpected)} unexpected)")
+    def _save_registry(self):
+        with open(self._registry_path(), "w") as f:
+            json.dump(self._registry, f, indent=2)
 
-    # 2. Load VLM weights
-    if mode == "lora":
-        adapter_dir = os.path.join(ckpt_dir, "lora_adapter")
-        if os.path.exists(adapter_dir) and hasattr(inner.vlm, "load_adapter"):
-            inner.vlm.load_adapter(adapter_dir, adapter_name="default")
-            print(f"  LoRA adapter loaded from {adapter_dir}")
-    else:
-        vlm_path = os.path.join(ckpt_dir, "vlm_trainable.pt")
-        if os.path.exists(vlm_path):
-            vlm_state = torch.load(vlm_path, map_location=device, weights_only=True)
-            model_state = dict(inner.named_parameters())
+    # ------------------------------------------------------------------
+    # Save
+    # ------------------------------------------------------------------
+
+    def save(self, model: nn.Module, optimizer, scheduler,
+             step: int, epoch: int, loss: float, mode: str) -> Path:
+        """Atomically save a checkpoint, rotate old ones, update best.
+
+        Returns:
+            Path to the saved checkpoint directory.
+        """
+        ckpt_name = f"checkpoint-{step}"
+        ckpt_dir  = self.output_dir / ckpt_name
+        ckpt_tmp  = self.output_dir / f"{ckpt_name}.tmp"
+
+        # 1. Write to tmp/ (crash-safe)
+        if ckpt_tmp.exists():
+            shutil.rmtree(ckpt_tmp)
+        ckpt_tmp.mkdir(parents=True)
+        self._write_weights(ckpt_tmp, model, optimizer, scheduler,
+                            step, epoch, loss, mode)
+
+        # 2. Atomic rename tmp/ → checkpoint-N/
+        if ckpt_dir.exists():
+            shutil.rmtree(ckpt_dir)
+        ckpt_tmp.rename(ckpt_dir)
+
+        # 3. Register
+        entry = {"name": ckpt_name, "step": step, "epoch": epoch,
+                 "loss": float(loss), "path": str(ckpt_dir)}
+        self._registry["checkpoints"].append(entry)
+
+        # 4. Update best/ symlink when loss improves
+        prev_best = self._registry["best"]
+        is_best = prev_best is None or float(loss) < float(prev_best["loss"])
+        if is_best:
+            self._update_best_link(ckpt_name)
+            self._registry["best"] = {**entry, "path": str(self.output_dir / "best")}
+            print(f"  [ckpt] New best: step={step}, loss={loss:.4f}")
+
+        # 5. Rotate: delete oldest, but never delete the current best
+        best_name = self._registry["best"]["name"] if self._registry["best"] else None
+        while len(self._registry["checkpoints"]) > self.keep_last_n:
+            oldest = self._registry["checkpoints"][0]
+            if oldest["name"] == best_name:
+                break  # protect best from rotation
+            self._registry["checkpoints"].pop(0)
+            old_path = Path(oldest["path"])
+            if old_path.exists():
+                shutil.rmtree(old_path)
+                print(f"  [ckpt] Rotated out: {oldest['name']}")
+
+        self._save_registry()
+
+        # 6. Report
+        est_gb = self._estimate_size_gb(model)
+        kept = [c["name"] for c in self._registry["checkpoints"]]
+        print(f"  [ckpt] Saved {ckpt_name} | loss={loss:.4f} | ~{est_gb:.1f} GB | kept={kept}")
+        return ckpt_dir
+
+    def _write_weights(self, ckpt_dir: Path, model: nn.Module, optimizer,
+                       scheduler, step: int, epoch: int, loss: float, mode: str):
+        """Write all checkpoint files into ckpt_dir."""
+        inner = model.module if hasattr(model, "module") else model
+
+        # 3D branch (always)
+        gs_state = {n: p.data.cpu() for n, p in inner.named_parameters()
+                    if _is_3d_branch_param(n)}
+        torch.save(gs_state, ckpt_dir / "3d_branch.pt")
+
+        # VLM weights (mode-dependent)
+        if mode == "lora":
+            if hasattr(inner, "vlm") and hasattr(inner.vlm, "save_pretrained"):
+                inner.vlm.save_pretrained(ckpt_dir / "lora_adapter")
+        else:
+            vlm_state = {n: p.data.cpu() for n, p in inner.named_parameters()
+                         if p.requires_grad and not _is_3d_branch_param(n)}
+            torch.save(vlm_state, ckpt_dir / "vlm_trainable.pt")
+
+        # Optimizer state (optional — large for full fine-tuning)
+        if self.save_optimizer_state and optimizer is not None:
+            try:
+                torch.save(optimizer.state_dict(), ckpt_dir / "optimizer.pt")
+            except Exception as e:
+                print(f"  [ckpt] Warning: optimizer state not saved: {e}")
+
+        # Scheduler state (small, always save)
+        if scheduler is not None:
+            try:
+                torch.save(scheduler.state_dict(), ckpt_dir / "scheduler.pt")
+            except Exception as e:
+                print(f"  [ckpt] Warning: scheduler state not saved: {e}")
+
+        # Metadata
+        metadata = {
+            "step": step, "epoch": epoch, "loss": float(loss), "mode": mode,
+            "save_optimizer_state": self.save_optimizer_state,
+            "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
+        }
+        with open(ckpt_dir / "metadata.json", "w") as f:
+            json.dump(metadata, f, indent=2)
+
+    def _update_best_link(self, ckpt_name: str):
+        """Point best/ symlink to ckpt_name/. Falls back to copy on failure."""
+        best_link = self.output_dir / "best"
+        try:
+            if best_link.is_symlink():
+                best_link.unlink()
+            elif best_link.exists():
+                shutil.rmtree(best_link)
+            os.symlink(ckpt_name, best_link)
+        except OSError:
+            # Cross-device or restricted filesystem: fall back to full copy
+            if best_link.exists():
+                shutil.rmtree(best_link)
+            shutil.copytree(self.output_dir / ckpt_name, best_link)
+
+    def _estimate_size_gb(self, model: nn.Module) -> float:
+        """Rough checkpoint size estimate in GB."""
+        inner = model.module if hasattr(model, "module") else model
+        trainable = sum(p.numel() for p in inner.parameters() if p.requires_grad)
+        weights_gb = trainable * 2 / 1e9          # bf16 weights
+        optim_gb   = trainable * 8 / 1e9 if self.save_optimizer_state else 0
+        return weights_gb + optim_gb
+
+    # ------------------------------------------------------------------
+    # Load
+    # ------------------------------------------------------------------
+
+    def load(self, ckpt_path: str, model: nn.Module, optimizer,
+             scheduler, mode: str, device: str) -> int:
+        """Load a checkpoint and restore model/optimizer/scheduler state.
+
+        ``ckpt_path`` can be:
+        - An absolute or relative path to a checkpoint directory.
+        - ``"best"``   — loads the current best checkpoint.
+        - ``"latest"`` — loads the most recently saved checkpoint.
+
+        Returns:
+            step: global step to resume training from.
+        """
+        ckpt_dir = self._resolve_path(ckpt_path)
+        if ckpt_dir is None or not ckpt_dir.exists():
+            print(f"  [ckpt] Checkpoint not found: {ckpt_path}")
+            return 0
+
+        inner = model.module if hasattr(model, "module") else model
+
+        # Metadata
+        step = 0
+        meta_path = ckpt_dir / "metadata.json"
+        if meta_path.exists():
+            with open(meta_path) as f:
+                meta = json.load(f)
+            step = meta.get("step", 0)
+            print(f"  [ckpt] Loading {ckpt_dir.name} | "
+                  f"step={meta['step']}, loss={meta['loss']:.4f}, "
+                  f"saved={meta['timestamp']}")
+
+        # 3D branch
+        gs_path = ckpt_dir / "3d_branch.pt"
+        if gs_path.exists():
+            gs_state  = torch.load(gs_path, map_location=device, weights_only=True)
+            param_map = dict(inner.named_parameters())
             loaded = 0
-            for name, tensor in vlm_state.items():
-                if name in model_state:
-                    model_state[name].data.copy_(tensor)
+            for n, t in gs_state.items():
+                if n in param_map:
+                    param_map[n].data.copy_(t)
                     loaded += 1
-            print(f"  VLM trainable params loaded ({loaded}/{len(vlm_state)})")
+            print(f"  [ckpt] 3D branch: {loaded}/{len(gs_state)} tensors")
 
-    # 3. Training state
-    state_path = os.path.join(ckpt_dir, "training_state.pt")
-    step = 0
-    if os.path.exists(state_path):
-        state = torch.load(state_path, map_location="cpu", weights_only=True)
-        step = state.get("step", 0)
-        if optimizer is not None and state.get("optimizer_state"):
-            try:
-                optimizer.load_state_dict(state["optimizer_state"])
-            except Exception as e:
-                print(f"  Warning: could not load optimizer state: {e}")
-        if scheduler is not None and state.get("scheduler_state"):
-            try:
-                scheduler.load_state_dict(state["scheduler_state"])
-            except Exception as e:
-                print(f"  Warning: could not load scheduler state: {e}")
-        print(f"  Resuming from step {step}")
+        # VLM weights
+        if mode == "lora":
+            adapter_dir = ckpt_dir / "lora_adapter"
+            if adapter_dir.exists() and hasattr(inner.vlm, "load_adapter"):
+                inner.vlm.load_adapter(str(adapter_dir), adapter_name="default")
+                print(f"  [ckpt] LoRA adapter loaded")
+        else:
+            vlm_path = ckpt_dir / "vlm_trainable.pt"
+            if vlm_path.exists():
+                vlm_state = torch.load(vlm_path, map_location=device, weights_only=True)
+                param_map = dict(inner.named_parameters())
+                loaded = 0
+                for n, t in vlm_state.items():
+                    if n in param_map:
+                        param_map[n].data.copy_(t)
+                        loaded += 1
+                print(f"  [ckpt] VLM params: {loaded}/{len(vlm_state)} tensors")
 
-    return step
+        # Optimizer
+        optim_path = ckpt_dir / "optimizer.pt"
+        if optim_path.exists() and optimizer is not None:
+            try:
+                optimizer.load_state_dict(
+                    torch.load(optim_path, map_location="cpu", weights_only=True))
+                print(f"  [ckpt] Optimizer state loaded")
+            except Exception as e:
+                print(f"  [ckpt] Warning: optimizer load failed: {e}")
+
+        # Scheduler
+        sched_path = ckpt_dir / "scheduler.pt"
+        if sched_path.exists() and scheduler is not None:
+            try:
+                scheduler.load_state_dict(
+                    torch.load(sched_path, map_location="cpu", weights_only=True))
+                print(f"  [ckpt] Scheduler state loaded")
+            except Exception as e:
+                print(f"  [ckpt] Warning: scheduler load failed: {e}")
+
+        print(f"  [ckpt] Resuming from step {step}")
+        return step
+
+    def _resolve_path(self, ckpt_path: str) -> Path | None:
+        if ckpt_path == "best":
+            return self.output_dir / "best"
+        if ckpt_path == "latest":
+            if self._registry["checkpoints"]:
+                return Path(self._registry["checkpoints"][-1]["path"])
+            return None
+        return Path(ckpt_path)
 
 
 # ---------------------------------------------------------------------------
@@ -705,21 +884,25 @@ def train(cfg: dict, args):
             print(f"\n[Rendering Loss] {render_size}x{render_size}, weight={render_cfg.get('weight', 0.1)}")
     render_weight = render_cfg.get("weight", 0.1) if render_loss_fn else 0.0
 
+    # -- Checkpoint manager --
+    ckpt_manager = CheckpointManager.from_config(cfg)
+
     # -- Resume --
     start_step = 0
     if args.resume:
         if is_main:
             print(f"\n[Resume] {args.resume}")
-        start_step = load_checkpoint(model, optimizer, scheduler, args.resume, mode, str(device))
+        start_step = ckpt_manager.load(
+            args.resume, model, optimizer, scheduler, mode, str(device))
 
     # -- Training config (continued) --
     max_grad_norm = train_cfg.get("max_grad_norm", 1.0)
     logging_steps = train_cfg.get("logging_steps", 10)
-    save_steps = train_cfg.get("save_steps", 500)
-    output_dir = train_cfg.get("output_dir", "outputs")
-    os.makedirs(output_dir, exist_ok=True)
+    save_steps    = train_cfg.get("save_steps", 500)
+    output_dir    = train_cfg.get("output_dir", "outputs")
 
     if is_main:
+        ckpt_cfg = cfg.get("checkpoint", {})
         print(f"\n[Training]")
         print(f"  Mode:       {mode}")
         print(f"  Epochs:     {train_cfg.get('num_epochs', 3)}")
@@ -727,10 +910,11 @@ def train(cfg: dict, args):
         print(f"  Steps:      {total_steps} (resume from {start_step})")
         print(f"  Output:     {output_dir}")
         print(f"  DeepSpeed:  {'enabled' if (ds_config and local_rank >= 0) else 'disabled'}")
+        print(f"  Checkpoints: keep_last={ckpt_cfg.get('keep_last_n', 3)}, "
+              f"save_optim={ckpt_cfg.get('save_optimizer_state', True)}")
 
     # -- Loop --
     global_step = start_step
-    best_loss = float("inf")
     model.train()
 
     for epoch in range(train_cfg.get("num_epochs", 3)):
@@ -784,10 +968,10 @@ def train(cfg: dict, args):
                     f"lr={lr:.2e} time={dt:.1f}s"
                 )
 
-            # Save
+            # Save (step-level)
             if is_main and save_steps > 0 and global_step % save_steps == 0:
-                ckpt_dir = os.path.join(output_dir, f"checkpoint-{global_step}")
-                save_checkpoint(model, optimizer, scheduler, global_step, ckpt_dir, mode)
+                ckpt_manager.save(model, optimizer, scheduler,
+                                  global_step, epoch, metrics["lm_loss"], mode)
 
             # Dry run
             if args.dry_run:
@@ -795,23 +979,19 @@ def train(cfg: dict, args):
                     print(f"\n  [Dry run] 1 step OK. lm_loss={metrics['lm_loss']:.4f}")
                 return metrics
 
-        # Epoch summary
+        # Epoch summary + epoch-level checkpoint (used for best tracking)
         avg_loss = epoch_loss / max(epoch_steps, 1)
         if is_main:
             dt = time.time() - t_epoch
             print(f"\n  Epoch {epoch + 1}: avg_loss={avg_loss:.4f}, time={dt:.1f}s")
+            ckpt_manager.save(model, optimizer, scheduler,
+                              global_step, epoch, avg_loss, mode)
 
-            if avg_loss < best_loss:
-                best_loss = avg_loss
-                save_checkpoint(model, optimizer, scheduler, global_step,
-                                os.path.join(output_dir, "best"), mode)
-                print(f"  Best model saved (loss={best_loss:.4f})")
-
-    # Final
+    # Final summary (best info comes from registry)
     if is_main:
-        save_checkpoint(model, optimizer, scheduler, global_step,
-                        os.path.join(output_dir, "final"), mode)
-        print(f"\nTraining complete [{mode}]. Best loss: {best_loss:.4f}")
+        best = ckpt_manager._registry.get("best")
+        best_info = f"step={best['step']}, loss={best['loss']:.4f}" if best else "n/a"
+        print(f"\nTraining complete [{mode}]. Best: {best_info}")
         print(f"Checkpoints: {output_dir}")
 
 

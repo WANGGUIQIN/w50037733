@@ -60,6 +60,13 @@ rendering_loss:
   lambda_opacity: 0.01
   weight: 0.1
 
+# === Checkpoint ===
+# B200 full fine-tune: ~24 GB/ckpt weights + ~48 GB optimizer = ~72 GB/ckpt
+# keep_last_n=2 limits step checkpoints; best is always preserved
+checkpoint:
+  keep_last_n: 2
+  save_optimizer_state: true
+
 # === DeepSpeed ===
 # ZeRO-2: partition optimizer + gradients (no CPU offload needed on B200)
 # Memory per GPU: model 16G + optimizer 48G/2 + gradients 8G + activations ~20G ≈ 68GB
