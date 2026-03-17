@@ -30,6 +30,19 @@ lora:
   bias: "none"
   task_type: "CAUSAL_LM"
 
+# === Prompt (Qwen3-VL chat template) ===
+# Matches RoboBrain2.5's inference protocol for consistent train/test format
+prompt:
+  # System prompt for the chat template (set disable_system_prompt: true to omit)
+  system_prompt: >-
+    You are RoboBrain, an embodied AI assistant specialized in robotic
+    manipulation. Given an image of a scene with 3D spatial understanding,
+    provide precise affordance predictions and manipulation constraints.
+  disable_system_prompt: false
+  # Maximum sequence length (system+user+assistant tokens)
+  # 512 is generous for affordance tasks (~200 tokens typical)
+  max_seq_length: 512
+
 # === Data ===
 data:
   rlbench_root: "/home/w50037733/robobrain_3dgs/data/rlbench_sample"

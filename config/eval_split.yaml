@@ -1,0 +1,68 @@
+# ============================================================================
+# RoboBrain-3DGS Evaluation Split Configuration
+# ============================================================================
+#
+# Three-level generalization evaluation:
+#
+#   Level 1 — Seen-Task (episode split)
+#     Train on episodes 0-79, test on 80-99 of the SAME tasks.
+#     Tests: spatial generalization (same task, different object placements).
+#
+#   Level 2 — Unseen-Task (task holdout)
+#     Hold out entire tasks not seen during training.
+#     Tests: semantic transfer (novel manipulation instructions).
+#
+#   Level 3 — Cross-Camera (view transfer)
+#     Train on front camera, test on left_shoulder / right_shoulder / wrist.
+#     Tests: viewpoint invariance — the 3D branch's core advantage.
+#
+# The split unit is EPISODE (not frame), because consecutive frames within
+# the same episode are highly correlated and would cause data leakage.
+#
+# Usage:
+#   python evaluate.py --eval_config config/eval_split.yaml ...
+# ============================================================================
+
+# --- Data root (full RLBench dataset) ---
+# Point this to the server where you downloaded all RLBench tasks.
+data_root: "/PATH/TO/RLBENCH/DATA"     # <-- CHANGE THIS
+
+# --- Seed for reproducible splits ---
+seed: 42
+
+# --- Episode split ratio (for seen tasks) ---
+# episodes are sorted by name, then deterministically split by seed.
+train_episode_ratio: 0.8     # 80% train, 20% test within each task
+
+# --- Task split ---
+# Tasks listed here are COMPLETELY held out from training.
+# Choose tasks that span different skill categories:
+#   - pick/place: pick_up_cup, stack_blocks
+#   - articulated: open_drawer, close_jar
+#   - tool use:   screw_nail, slide_block
+#   - precise:    insert_peg, place_cups
+held_out_tasks:
+  - open_drawer         # articulated manipulation
+  - pick_up_cup         # pick-and-place
+  - slide_block         # pushing / sliding
+  - stack_blocks        # multi-step stacking
+  - insert_peg          # high-precision insertion
+
+# --- Camera configuration ---
+train_camera: "front"
+test_cameras:
+  - "front"              # same as train (sanity check)
+  - "left_shoulder"      # ~45 deg left
+  - "right_shoulder"     # ~45 deg right
+  - "wrist"              # egocentric (hardest)
+
+# --- Sampling ---
+# Max frames per (task, episode) to avoid huge eval on long episodes.
+# Set -1 for all frames.
+max_frames_per_episode: 20
+
+# --- Evaluation levels to run ---
+# Toggle individual levels on/off (useful for quick iteration).
+run_level1_seen_task: true
+run_level2_unseen_task: true
+run_level3_cross_camera: true

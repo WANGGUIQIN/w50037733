@@ -194,6 +194,7 @@ class DROIDDataset(Dataset):
             "intrinsics": intrinsics,
             "prompt": DEFAULT_PROMPT,
             "target": target,
+            "task_type": "affordance",
         }
 
 

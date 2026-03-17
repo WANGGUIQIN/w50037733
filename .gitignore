@@ -1,3 +1,20 @@
 __pycache__/
 *.pyc
 *.pyo
+
+# Data (sample datasets, too large for git)
+data/rlbench_sample/
+data/droid_sample/
+
+# Training outputs
+outputs/
+
+# Model weights
+*.pt
+*.bin
+*.safetensors
+*.npy
+
+# Environment
+.env
+*.log

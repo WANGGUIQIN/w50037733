@@ -39,6 +39,7 @@ from transformers import (
 
 from .depth_to_gaussian import DepthToGaussian
 from .gs_encoder import GaussianEncoder
+from .cross_modal_fusion import CrossModalFusion
 
 # Supported VLM types: maps model_type string -> (config_class, model_class)
 SUPPORTED_VLM = {
@@ -128,6 +129,11 @@ class RoboBrain3DGS_VLM(nn.Module):
             llm_hidden_dim=self.llm_hidden_dim,
         )
 
+        # ====== Cross-Modal Fusion (optional, enabled by from_pretrained) ======
+        # When active, 3D tokens attend to 2D ViT tokens via cross-attention,
+        # aligning them with the ViT feature manifold the LLM understands.
+        self.fusion: CrossModalFusion | None = None
+
         # ====== Learnable 3D position embedding ======
         # Tells the LLM "these tokens come from 3D space"
         self.gs_type_embedding = nn.Parameter(
@@ -176,31 +182,65 @@ class RoboBrain3DGS_VLM(nn.Module):
             return self.vlm.model.lm_head
         return self.vlm.lm_head
 
+    @torch.no_grad()
+    def extract_vit_tokens(
+        self,
+        pixel_values: torch.Tensor,
+        image_grid_thw: torch.Tensor,
+    ) -> torch.Tensor:
+        """Run frozen ViT to extract per-sample 2D visual tokens.
+
+        Args:
+            pixel_values:   preprocessed by AutoProcessor
+            image_grid_thw: [B, 3] grid info from AutoProcessor
+
+        Returns:
+            vit_tokens: [B, N_2d, llm_hidden_dim]
+        """
+        B = image_grid_thw.shape[0]
+        visual_out = self._get_visual()(pixel_values, grid_thw=image_grid_thw)
+        # visual_out is [total_tokens, D] (flat across batch)
+        N_2d = visual_out.shape[0] // B
+        return visual_out.reshape(B, N_2d, -1)
+
     def encode_3d(
         self,
         rgb: torch.Tensor,
         depth: torch.Tensor,
         intrinsics: torch.Tensor,
-    ) -> torch.Tensor:
-        """Encode RGBD input into 3D Gaussian tokens.
+        vit_tokens: torch.Tensor | None = None,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        """Encode RGBD input into 3D Gaussian tokens, optionally fused with 2D.
+
+        When ``vit_tokens`` is provided and ``self.fusion`` is active, the raw
+        PointNet++ tokens attend to ViT tokens via cross-attention before
+        being projected to LLM dim.  Otherwise falls back to the simple
+        linear projector (backward-compatible).
 
         Args:
             rgb: [B, 3, H, W]
             depth: [B, 1, H, W]
             intrinsics: [B, 3, 3]
+            vit_tokens: [B, N_2d, llm_hidden_dim]  (optional, from frozen ViT)
 
         Returns:
             gs_tokens: [B, num_gs_tokens, llm_hidden_dim]
+            gaussians: [B, num_gaussians, gaussian_dim]  (for rendering loss)
         """
         # RGBD -> 3D Gaussians
         gaussians = self.depth_to_gaussian(rgb, depth, intrinsics)
-        # 3D Gaussians -> tokens
-        gs_tokens = self.gs_encoder(gaussians)
-        # Project to LLM hidden dim
-        gs_tokens = self.gs_projector(gs_tokens)
+        # 3D Gaussians -> raw tokens
+        raw_tokens = self.gs_encoder(gaussians)  # [B, N, gs_encoder_dim]
+
+        # Fuse with 2D if available, else simple projection
+        if vit_tokens is not None and self.fusion is not None:
+            gs_tokens = self.fusion(raw_tokens, vit_tokens)
+        else:
+            gs_tokens = self.gs_projector(raw_tokens)
+
         # Add type embedding
         gs_tokens = gs_tokens + self.gs_type_embedding
-        return gs_tokens
+        return gs_tokens, gaussians
 
     def forward(
         self,
@@ -213,65 +253,58 @@ class RoboBrain3DGS_VLM(nn.Module):
         rgb_for_3d: torch.Tensor | None = None,
         labels: torch.Tensor | None = None,
     ):
-        """Forward pass with 3D Gaussian token injection.
+        """Forward pass with dual-stream visual encoding.
 
-        The strategy:
-        1. Get input embeddings from the VLM (includes 2D visual token replacement)
-        2. Encode RGBD -> 3D tokens
-        3. Concatenate 3D tokens to the embedding sequence
-        4. Run the LLM decoder on the combined sequence
+        Dual-stream pipeline (when both pixel_values and depth are provided):
+          1. ViT (frozen) encodes RGB -> 2D tokens, injected at <image_pad>
+          2. 3D branch encodes RGBD -> raw 3D tokens
+          3. CrossModalFusion: 3D queries attend to 2D keys/values -> fused tokens
+          4. Fused 3D tokens prepended before the full sequence
+          5. LLM sees: [fused_3d | 2d_visual + text] -> output
 
-        Args:
-            input_ids: [B, seq_len] token IDs (with image placeholder tokens)
-            attention_mask: [B, seq_len]
-            pixel_values: preprocessed image pixels for Qwen2.5-VL's ViT
-            image_grid_thw: [num_images, 3] temporal/height/width grid info
-            depth: [B, 1, H, W] depth map (for 3D branch)
-            intrinsics: [B, 3, 3] camera intrinsics (for 3D branch)
-            rgb_for_3d: [B, 3, H, W] RGB image at original resolution (for 3D branch)
-            labels: [B, seq_len] for computing language modeling loss
+        Backward-compatible: works with pixel_values=None (text-only) or
+        depth=None (2D-only) as before.
         """
         B = input_ids.shape[0]
         device = input_ids.device
 
-        # Step 1: Get text + 2D visual embeddings from VLM
-        # This handles image token replacement internally
+        # Step 1: Get text embeddings
         inputs_embeds = self._get_embed_tokens()(input_ids)
 
-        # If pixel_values provided, run VLM's visual encoder
+        # Step 2: Run ViT if pixel_values provided (native 2D path)
+        vit_tokens = None
         if pixel_values is not None and image_grid_thw is not None:
-            # Qwen2.5-VL visual encoding
             visual_outputs = self._get_visual()(
-                pixel_values,
-                grid_thw=image_grid_thw,
+                pixel_values, grid_thw=image_grid_thw,
             )
-            # Replace image token positions with visual features
+            # Inject 2D tokens at <image_pad> positions (standard VLM path)
             image_token_id = self.vlm.config.image_token_id
             image_mask = input_ids == image_token_id
-            # The visual outputs need to be placed at image token positions
             if image_mask.any():
                 inputs_embeds[image_mask] = visual_outputs.to(inputs_embeds.dtype)
 
-        # Step 2: Encode 3D Gaussian tokens (if depth is provided)
-        if depth is not None and intrinsics is not None and rgb_for_3d is not None:
-            gs_tokens = self.encode_3d(rgb_for_3d, depth, intrinsics)
-            # [B, num_gs_tokens, hidden_dim]
+            # Keep per-sample 2D tokens for fusion
+            N_2d = visual_outputs.shape[0] // B
+            vit_tokens = visual_outputs.reshape(B, N_2d, -1).detach()
 
-            # Step 3: Inject 3D tokens into the sequence
-            # Strategy: prepend 3D tokens before text+2D tokens
-            # This lets the LLM attend to 3D information throughout
+        # Step 3: Encode 3D Gaussian tokens with optional fusion
+        gaussians = None
+        if depth is not None and intrinsics is not None and rgb_for_3d is not None:
+            gs_tokens, gaussians = self.encode_3d(
+                rgb_for_3d, depth, intrinsics, vit_tokens=vit_tokens,
+            )
+
+            # Prepend fused 3D tokens before the full sequence
             inputs_embeds = torch.cat([gs_tokens, inputs_embeds], dim=1)
 
-            # Extend attention mask for 3D tokens
             gs_attention = torch.ones(
-                B, self.num_gs_tokens, dtype=attention_mask.dtype, device=device
+                B, self.num_gs_tokens, dtype=attention_mask.dtype, device=device,
             )
             attention_mask = torch.cat([gs_attention, attention_mask], dim=1)
 
-            # Extend labels if provided (3D tokens have no label -> -100)
             if labels is not None:
                 gs_labels = torch.full(
-                    (B, self.num_gs_tokens), -100, dtype=labels.dtype, device=device
+                    (B, self.num_gs_tokens), -100, dtype=labels.dtype, device=device,
                 )
                 labels = torch.cat([gs_labels, labels], dim=1)
 
@@ -300,6 +333,8 @@ class RoboBrain3DGS_VLM(nn.Module):
             "loss": loss,
             "logits": logits,
             "hidden_states": hidden_states,
+            "gaussians": gaussians,
+            "vit_tokens": vit_tokens,
         }
 
     @torch.no_grad()
@@ -327,41 +362,65 @@ class RoboBrain3DGS_VLM(nn.Module):
         # Get base embeddings
         inputs_embeds = self._get_embed_tokens()(input_ids)
 
-        # Visual encoding
+        # Visual encoding (2D ViT path)
+        vit_tokens = None
         if pixel_values is not None and image_grid_thw is not None:
             visual_outputs = self._get_visual()(
-                pixel_values,
-                grid_thw=image_grid_thw,
+                pixel_values, grid_thw=image_grid_thw,
             )
             image_token_id = self.vlm.config.image_token_id
             image_mask = input_ids == image_token_id
             if image_mask.any():
                 inputs_embeds[image_mask] = visual_outputs.to(inputs_embeds.dtype)
+            # Keep 2D tokens for cross-modal fusion
+            N_2d = visual_outputs.shape[0] // B
+            vit_tokens = visual_outputs.reshape(B, N_2d, -1).detach()
 
-        # 3D token injection
+        # 3D token injection (with optional cross-modal fusion)
         if depth is not None and intrinsics is not None and rgb_for_3d is not None:
-            gs_tokens = self.encode_3d(rgb_for_3d, depth, intrinsics)
+            gs_tokens, _ = self.encode_3d(
+                rgb_for_3d, depth, intrinsics, vit_tokens=vit_tokens,
+            )
             inputs_embeds = torch.cat([gs_tokens, inputs_embeds], dim=1)
 
             gs_attention = torch.ones(
-                B, self.num_gs_tokens, dtype=attention_mask.dtype, device=device
+                B, self.num_gs_tokens, dtype=attention_mask.dtype, device=device,
             )
             attention_mask = torch.cat([gs_attention, attention_mask], dim=1)
 
+        # Hoist EOS config outside the generation loop
+        eos_id = self.vlm.config.text_config.eos_token_id
+        if isinstance(eos_id, int):
+            eos_id = [eos_id]
+        eos_set = set(eos_id)
+
+        # Pre-allocate output buffer instead of quadratic torch.cat
+        initial_len = input_ids.shape[1]
+        generated = torch.zeros(
+            B, initial_len + max_new_tokens, dtype=input_ids.dtype, device=device,
+        )
+        generated[:, :initial_len] = input_ids
+        gen_len = initial_len
+
+        # Pre-allocate attention mask buffer
+        total_attn_len = attention_mask.shape[1] + max_new_tokens
+        full_attn = torch.ones(B, total_attn_len, dtype=attention_mask.dtype, device=device)
+        attn_len = attention_mask.shape[1]
+        full_attn[:, :attn_len] = attention_mask
+
         # Autoregressive generation
-        generated = input_ids.clone()
         past_key_values = None
 
         for step in range(max_new_tokens):
             if step == 0:
                 out = self._get_language_model()(
                     inputs_embeds=inputs_embeds,
-                    attention_mask=attention_mask,
+                    attention_mask=full_attn[:, :attn_len],
                 )
             else:
                 out = self._get_language_model()(
                     inputs_embeds=next_embeds,
-                    attention_mask=attention_mask,
+                    attention_mask=full_attn[:, :attn_len],
                     past_key_values=past_key_values,
                 )
 
@@ -376,23 +435,22 @@ class RoboBrain3DGS_VLM(nn.Module):
 
             # Move to input device (lm_head may be on a different GPU)
             next_token = next_token.to(device)
-            generated = torch.cat([generated, next_token], dim=1)
+            generated[:, gen_len] = next_token[:, 0]
+            gen_len += 1
+            attn_len += 1
 
-            # Check for EOS
-            eos_id = self.vlm.config.text_config.eos_token_id
-            if isinstance(eos_id, int):
-                eos_id = [eos_id]
-            if next_token.item() in eos_id:
-                break
+            # Check for EOS (B=1 fast path)
+            if B == 1:
+                if next_token.item() in eos_set:
+                    break
+            else:
+                if all(generated[b, gen_len - 1].item() in eos_set for b in range(B)):
+                    break
 
             # Prepare next step
             next_embeds = self._get_embed_tokens()(next_token)
-            attention_mask = torch.cat([
-                attention_mask,
-                torch.ones(B, 1, dtype=attention_mask.dtype, device=device),
-            ], dim=1)
 
-        return generated
+        return generated[:, :gen_len]
 
     @classmethod
     def from_pretrained(

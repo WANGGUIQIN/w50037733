@@ -87,6 +87,31 @@ def decode_rlbench_depth(depth_rgb: np.ndarray, near: float = 0.01, far: float =
     return depth_m.astype(np.float32)
 
 
+def _split_episodes(
+    all_eps: list[Path],
+    split: str,
+    train_ratio: float,
+    seed: int,
+) -> set[str]:
+    """Deterministically split episode directories into train/test sets.
+
+    Episodes are sorted by name, shuffled with a fixed seed, then the
+    first ``train_ratio`` fraction goes to "train" and the rest to "test".
+    Returns a set of episode *names* belonging to the requested split.
+    """
+    import random as _random
+    names = [ep.name for ep in sorted(all_eps, key=lambda p: p.name)]
+    rng = _random.Random(seed)
+    rng.shuffle(names)
+    n_train = max(1, int(len(names) * train_ratio))
+    if split == "train":
+        return set(names[:n_train])
+    elif split == "test":
+        return set(names[n_train:])
+    else:
+        raise ValueError(f"split must be 'train' or 'test', got {split!r}")
+
+
 class RLBenchDataset(Dataset):
     """Load RLBench episodes as RGBD samples for 3DGS training.
 
@@ -99,6 +124,19 @@ class RLBenchDataset(Dataset):
                   front_rgb/0.png, 1.png, ...
                   front_depth/0.png, 1.png, ...
                   ...
+
+    Split modes (controlled by ``split`` and related params):
+
+        split=None   Load everything (backward-compatible default).
+        split="train" / "test"
+            Episode-level split within each task.  Episodes are sorted by
+            name, deterministically shuffled with ``seed``, then the first
+            ``train_ratio`` fraction goes to train and the rest to test.
+        task_filter   If given, only load these task names.
+        task_exclude  If given, skip these task names entirely.
+        max_frames_per_episode
+            Cap the number of frames sampled from each episode (useful
+            for large-scale eval so runtime stays bounded).
     """
 
     def __init__(
@@ -107,30 +145,58 @@ class RLBenchDataset(Dataset):
         camera: str = "front",
         image_size: int = 256,
         max_frames: int = -1,
+        # --- split params (all optional, backward-compatible) ---
+        split: str | None = None,
+        train_ratio: float = 0.8,
+        seed: int = 42,
+        task_filter: list[str] | None = None,
+        task_exclude: list[str] | None = None,
+        max_frames_per_episode: int = -1,
     ):
         super().__init__()
         self.root = Path(root_dir)
         self.camera = camera
         self.image_size = image_size
 
-        # Discover all frames
+        _task_filter = set(task_filter) if task_filter else None
+        _task_exclude = set(task_exclude) if task_exclude else set()
+
+        # Discover all frames, grouped by (task, episode)
         self.samples = []
         for task_dir in sorted(self.root.iterdir()):
             if not task_dir.is_dir():
                 continue
             task_name = task_dir.name
+            if _task_filter is not None and task_name not in _task_filter:
+                continue
+            if task_name in _task_exclude:
+                continue
             episodes_dir = task_dir / "all_variations" / "episodes"
             if not episodes_dir.exists():
                 continue
+
+            # Determine which episodes belong to this split
+            all_eps = sorted(
+                [d for d in episodes_dir.iterdir() if d.is_dir()],
+                key=lambda p: p.name,
+            )
+            if split is not None and all_eps:
+                selected = _split_episodes(all_eps, split, train_ratio, seed)
+            else:
+                selected = set(ep.name for ep in all_eps)
+
             for ep_dir in sorted(episodes_dir.iterdir()):
+                if ep_dir.name not in selected:
+                    continue
                 rgb_dir = ep_dir / f"{camera}_rgb"
                 depth_dir = ep_dir / f"{camera}_depth"
                 if not rgb_dir.exists() or not depth_dir.exists():
                     continue
+                ep_frames = []
                 for rgb_file in sorted(rgb_dir.glob("*.png"), key=lambda p: int(p.stem)):
                     depth_file = depth_dir / rgb_file.name
                     if depth_file.exists():
-                        self.samples.append({
+                        ep_frames.append({
                             "rgb_path": str(rgb_file),
                             "depth_path": str(depth_file),
                             "task": task_name,
@@ -138,6 +204,12 @@ class RLBenchDataset(Dataset):
                             "episode": ep_dir.name,
                             "frame": int(rgb_file.stem),
                         })
+                # Cap frames per episode
+                if max_frames_per_episode > 0 and len(ep_frames) > max_frames_per_episode:
+                    # Deterministic uniform subsample
+                    step = len(ep_frames) / max_frames_per_episode
+                    ep_frames = [ep_frames[int(i * step)] for i in range(max_frames_per_episode)]
+                self.samples.extend(ep_frames)
 
         if max_frames > 0:
             self.samples = self.samples[:max_frames]
@@ -306,6 +378,7 @@ class RLBenchDataset(Dataset):
             "prompt": prompt,
             "target": target,
             "task": info["task"],
+            "task_type": "affordance",
             "episode": info["episode"],
             "frame": info["frame"],
         }

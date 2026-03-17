@@ -54,6 +54,7 @@ from models.robobrain_vlm import RoboBrain3DGS_VLM
 from models.gs_renderer import GaussianRenderingLoss
 from data.rlbench_loader import RLBenchDataset
 from data.droid_loader import DROIDDataset
+from utils.prompt_utils import build_chat_inputs, DEFAULT_SYSTEM_PROMPT, DEFAULT_TASK_TYPE
 
 
 # ---------------------------------------------------------------------------
@@ -105,6 +106,7 @@ def collate_fn(batch: list[dict]) -> dict:
         "intrinsics": torch.stack([s["intrinsics"] for s in batch]),
         "prompts": [s["prompt"] for s in batch],
         "targets": [s["target"] for s in batch],
+        "task_types": [s.get("task_type", DEFAULT_TASK_TYPE) for s in batch],
     }
 
 
@@ -376,62 +378,8 @@ def build_scheduler(optimizer, train_cfg: dict, total_steps: int):
 # Training step
 # ---------------------------------------------------------------------------
 
-def build_lm_inputs(
-    prompts: list[str],
-    targets: list[str],
-    tokenizer,
-    device: str,
-    max_length: int = 256,
-) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-    """Tokenise prompt+target and build labels that mask the prompt.
-
-    For each sample the full text is::
-        "Task: {prompt}\nAffordance: {target}"
-
-    Labels are set to -100 for all prompt tokens so LM loss is only
-    computed over the target (affordance + constraint) tokens.
-
-    Returns:
-        input_ids:      [B, L]
-        attention_mask: [B, L]
-        labels:         [B, L]  (-100 at prompt positions)
-    """
-    prompt_texts = [f"Task: {p}\nAffordance:" for p in prompts]
-    full_texts   = [f"{pt} {t}" for pt, t in zip(prompt_texts, targets)]
-
-    # Tokenise full sequences (pad to same length)
-    full_enc = tokenizer(
-        full_texts,
-        return_tensors="pt",
-        padding=True,
-        truncation=True,
-        max_length=max_length,
-    )
-    input_ids     = full_enc.input_ids.to(device)
-    attention_mask = full_enc.attention_mask.to(device)
-
-    # Tokenise only the prompt part to know where to stop masking.
-    # We tokenize WITHOUT the leading space before the target so the
-    # boundary is at the end of "Affordance:" (inclusive).
-    prompt_enc = tokenizer(
-        prompt_texts,
-        return_tensors="pt",
-        padding=True,
-        truncation=True,
-        max_length=max_length,
-    )
-    prompt_lens = attention_mask.new_tensor(
-        [int(m.sum()) for m in prompt_enc.attention_mask]
-    )  # [B] — number of non-pad tokens in each prompt
-
-    labels = input_ids.clone()
-    for i, plen in enumerate(prompt_lens):
-        labels[i, :plen] = -100   # mask prompt tokens
-
-    # Also mask padding positions
-    labels[attention_mask == 0] = -100
-
-    return input_ids, attention_mask, labels
+# Backward-compatible alias (evaluate.py imports this name)
+build_lm_inputs = build_chat_inputs
 
 
 def train_step(
@@ -441,6 +389,8 @@ def train_step(
     render_loss_fn: GaussianRenderingLoss | None,
     render_weight: float,
     device: str,
+    system_prompt: str | None = DEFAULT_SYSTEM_PROMPT,
+    max_seq_length: int = 512,
 ) -> dict[str, torch.Tensor]:
     """One forward + loss computation. Does NOT call backward."""
     inner = model.module if hasattr(model, "module") else model
@@ -451,10 +401,14 @@ def train_step(
     intrinsics = batch["intrinsics"].to(device=device, dtype=dtype)
     prompts    = batch["prompts"]
     targets    = batch["targets"]
+    task_types = batch.get("task_types")
 
-    # Tokenise: compute LM loss only on target (affordance) tokens
-    input_ids, attention_mask, labels = build_lm_inputs(
-        prompts, targets, tokenizer, device
+    # Tokenise with Qwen3-VL chat template: LM loss only on assistant tokens
+    input_ids, attention_mask, labels = build_chat_inputs(
+        prompts, targets, tokenizer, device,
+        max_length=max_seq_length,
+        system_prompt=system_prompt,
+        task_types=task_types,
     )
 
     # Forward
@@ -468,10 +422,10 @@ def train_step(
     )
     lm_loss = outputs["loss"]
 
-    # Rendering loss
+    # Rendering loss (reuse gaussians from forward pass, avoid double CNN pass)
     render_metrics = {}
     if render_loss_fn is not None:
-        gaussians = inner.depth_to_gaussian(rgb, depth, intrinsics)
+        gaussians = outputs["gaussians"]
         rl = render_loss_fn(gaussians, intrinsics, rgb, depth)
         render_loss = rl["loss"].to(lm_loss.device)
         render_metrics = {f"render/{k}": v.item() for k, v in rl.items() if k != "loss"}
@@ -895,6 +849,13 @@ def train(cfg: dict, args):
         start_step = ckpt_manager.load(
             args.resume, model, optimizer, scheduler, mode, str(device))
 
+    # -- Prompt config --
+    prompt_cfg = cfg.get("prompt", {})
+    system_prompt = prompt_cfg.get("system_prompt", DEFAULT_SYSTEM_PROMPT)
+    if prompt_cfg.get("disable_system_prompt", False):
+        system_prompt = None
+    max_seq_length = prompt_cfg.get("max_seq_length", 512)
+
     # -- Training config (continued) --
     max_grad_norm = train_cfg.get("max_grad_norm", 1.0)
     logging_steps = train_cfg.get("logging_steps", 10)
@@ -903,6 +864,10 @@ def train(cfg: dict, args):
 
     if is_main:
         ckpt_cfg = cfg.get("checkpoint", {})
+        print(f"\n[Prompt]")
+        print(f"  Chat template: Qwen3-VL (<|im_start|>/<|im_end|>)")
+        print(f"  System prompt: {'enabled' if system_prompt else 'disabled'}")
+        print(f"  Max seq length: {max_seq_length}")
         print(f"\n[Training]")
         print(f"  Mode:       {mode}")
         print(f"  Epochs:     {train_cfg.get('num_epochs', 3)}")
@@ -933,6 +898,8 @@ def train(cfg: dict, args):
             metrics = train_step(
                 model, batch, tokenizer,
                 render_loss_fn, render_weight, str(device),
+                system_prompt=system_prompt,
+                max_seq_length=max_seq_length,
             )
             loss = metrics["loss"]
 
