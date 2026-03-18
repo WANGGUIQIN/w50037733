@@ -175,9 +175,10 @@ def build_model_lora(cfg: dict, local_rank: int):
     dtype = getattr(torch, model_cfg.get("torch_dtype", "bfloat16"))
 
     # DeepSpeed: load to CPU first, let deepspeed.initialize() handle device placement.
-    # Single-GPU: use device_map="auto" for automatic GPU placement.
+    # Single-GPU: pin to cuda:0 (device_map="auto" spreads across GPUs, breaking
+    # optimizer.step() because FusedAdam/AdamW need all params on one device).
     use_deepspeed = local_rank >= 0
-    device_map = None if use_deepspeed else "auto"
+    device_map = None if use_deepspeed else {"": 0}
 
     model = RoboBrain3DGS_VLM.from_pretrained(
         model_path=model_cfg["base_model"],
@@ -215,7 +216,7 @@ def build_model_full(cfg: dict, local_rank: int):
     dtype = getattr(torch, model_cfg.get("torch_dtype", "bfloat16"))
 
     use_deepspeed = local_rank >= 0
-    device_map = None if use_deepspeed else "auto"
+    device_map = None if use_deepspeed else {"": 0}
 
     model = RoboBrain3DGS_VLM.from_pretrained(
         model_path=model_cfg["base_model"],
@@ -272,7 +273,7 @@ def _needs_cpu_adam(cfg: dict) -> bool:
         return False
 
 
-def build_optimizer(model: nn.Module, cfg: dict, mode: str):
+def build_optimizer(model: nn.Module, cfg: dict, mode: str, use_deepspeed: bool = False):
     """Build optimizer with per-group learning rates.
 
     Groups:
@@ -282,6 +283,7 @@ def build_optimizer(model: nn.Module, cfg: dict, mode: str):
 
     Uses DeepSpeedCPUAdam when ZeRO-3 CPU offload is enabled
     (required by DeepSpeed for efficient CPU-side optimizer steps).
+    FusedAdam is only used when DeepSpeed is active (it requires DS wrapper).
     """
     train_cfg = cfg["training"]
 
@@ -331,7 +333,8 @@ def build_optimizer(model: nn.Module, cfg: dict, mode: str):
 
     # Select optimizer based on hardware and offload config
     use_cpu_adam = _needs_cpu_adam(cfg)
-    use_fused = train_cfg.get("use_fused_adam", False)
+    # FusedAdam only works with DeepSpeed (CUDA kernel needs DS optimizer wrapper)
+    use_fused = train_cfg.get("use_fused_adam", False) and use_deepspeed
     wd = train_cfg.get("weight_decay", 0.01)
 
     if use_cpu_adam:
@@ -768,9 +771,10 @@ def train(cfg: dict, args):
         raise ValueError(f"Unknown finetune_mode: {mode!r}. Use 'lora' or 'full'.")
 
     # -- Optimizer --
+    use_deepspeed = local_rank >= 0
     if is_main:
         print("\n[Optimizer]")
-    optimizer = build_optimizer(model, cfg, mode)
+    optimizer = build_optimizer(model, cfg, mode, use_deepspeed=use_deepspeed)
 
     # -- Tokenizer --
     from transformers import AutoProcessor

@@ -463,7 +463,7 @@ class RoboBrain3DGS_VLM(nn.Module):
         freeze_vision_encoder: bool = True,
         freeze_llm: bool = False,
         torch_dtype=torch.bfloat16,
-        device_map: str = "auto",
+        device_map="auto",
     ) -> "RoboBrain3DGS_VLM":
         """Load a pretrained RoboBrain VLM and attach 3D Gaussian modules.
 
@@ -476,7 +476,8 @@ class RoboBrain3DGS_VLM(nn.Module):
             freeze_vision_encoder: Whether to freeze the 2D ViT
             freeze_llm: Whether to freeze the LLM decoder
             torch_dtype: Model dtype (bfloat16 recommended for 8B)
-            device_map: Device mapping strategy
+            device_map: Device mapping strategy. Use {"": 0} for single-GPU
+                training, None for DeepSpeed (CPU load), "auto" for inference.
 
         Returns:
             RoboBrain3DGS_VLM with pretrained VLM weights loaded
@@ -523,6 +524,9 @@ class RoboBrain3DGS_VLM(nn.Module):
         model.gs_type_embedding = nn.Parameter(
             torch.randn(1, 1, model.llm_hidden_dim) * 0.02
         )
+
+        # Cross-modal fusion (not enabled by default in from_pretrained)
+        model.fusion = None
 
         # Move 3D branch to same device as embed_tokens
         embed_device = model.vlm.model.language_model.embed_tokens.weight.device

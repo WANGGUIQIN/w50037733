@@ -25,10 +25,19 @@ full_finetune:
   unfreeze_lm_head: true
   gradient_checkpointing: false        # B200 has 192GB, no need (saves 30% compute)
 
+# === Prompt (Qwen3-VL chat template) ===
+prompt:
+  system_prompt: >-
+    You are RoboBrain, an embodied AI assistant specialized in robotic
+    manipulation. Given an image of a scene with 3D spatial understanding,
+    provide precise affordance predictions and manipulation constraints.
+  disable_system_prompt: false
+  max_seq_length: 512
+
 # === Data ===
 data:
-  rlbench_root: "data/rlbench_sample"
-  droid_root: "data/droid_sample"
+  rlbench_root: "/home/w50037733/robobrain_3dgs/data/rlbench_sample"
+  droid_root: "/home/w50037733/robobrain_3dgs/data/droid_sample"
   image_size: 256
   camera: "front"
   max_frames: -1

@@ -1,10 +1,14 @@
-# RoboBrain-3DGS LoRA Fine-tuning — B200 Optimized (2x B200 192GB)
+# RoboBrain-3DGS LoRA Fine-tuning — RTX 5090 (4x 32GB)
 #
-# Usage:
-#   deepspeed --num_gpus=2 train.py --config config/train_lora_b200.yaml
+# Single-GPU:
+#   python train.py --config config/train_lora_5090.yaml
 #
-# Memory estimate per GPU: ~47GB / 192GB (24%)
-# Global batch size: 8 * 2 * 2 = 32
+# Multi-GPU (DeepSpeed ZeRO-2):
+#   deepspeed --num_gpus=4 train.py --config config/train_lora_5090.yaml
+#
+# Memory estimate per GPU: ~25GB / 32GB (78%)
+# Global batch size (single): 2 * 1 * 4 = 8
+# Global batch size (4-GPU DS): 2 * 4 * 4 = 32
 
 # === Model ===
 model:
@@ -51,10 +55,10 @@ data:
 
 # === Training ===
 training:
-  output_dir: "outputs/lora_b200"
+  output_dir: "outputs/lora_5090"
   num_epochs: 10
-  per_device_batch_size: 8            # 4x larger than 5090 (192GB >> 32GB)
-  gradient_accumulation_steps: 2       # global_batch = 8 * 2 * 2 = 32
+  per_device_batch_size: 2              # 32GB GPU: max 2 with 8B model
+  gradient_accumulation_steps: 4        # effective batch = 2*4 = 8 (single) or 2*4*4=32 (4-GPU)
   learning_rate: 2.0e-4
   lr_3d_branch: 1.0e-3
   weight_decay: 0.01
@@ -64,7 +68,7 @@ training:
   save_steps: 500
   eval_steps: 100
   seed: 42
-  use_fused_adam: true                 # FusedAdam: GPU fused kernel, ~10% faster
+  use_fused_adam: true                  # Only active with DeepSpeed
 
 # === Checkpoint ===
 checkpoint:
@@ -74,7 +78,7 @@ checkpoint:
 # === Rendering Loss ===
 rendering_loss:
   enabled: true
-  render_size: 128                     # 2x larger than 5090 (better 3DGS supervision)
+  render_size: 64                       # 64x64 to fit in 32GB
   lambda_l1: 0.8
   lambda_ssim: 0.2
   lambda_depth: 0.5
@@ -82,6 +86,5 @@ rendering_loss:
   weight: 0.1
 
 # === DeepSpeed ===
-# ZeRO-1: partition optimizer states only (sufficient for LoRA's ~37M params)
 deepspeed:
   config: "config/deepspeed_zero1_b200.json"
