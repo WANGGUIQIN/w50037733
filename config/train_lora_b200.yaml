@@ -1,10 +1,10 @@
-# RoboBrain-3DGS LoRA Fine-tuning — B200 Optimized (2x B200 192GB)
+# RoboBrain-3DGS LoRA Fine-tuning — B200 Single-GPU (180GB)
 #
-# Usage:
-#   deepspeed --num_gpus=2 train.py --config config/train_lora_b200.yaml
+# Usage (single GPU, no DeepSpeed):
+#   python train.py --config config/train_lora_b200.yaml
 #
-# Memory estimate per GPU: ~47GB / 192GB (24%)
-# Global batch size: 8 * 2 * 2 = 32
+# Memory estimate: ~100GB / 180GB (56%)
+# Global batch size: 48 * 1 * 1 = 48
 
 # === Model ===
 model:
@@ -53,18 +53,18 @@ data:
 training:
   output_dir: "outputs/lora_b200"
   num_epochs: 10
-  per_device_batch_size: 8            # 4x larger than 5090 (192GB >> 32GB)
-  gradient_accumulation_steps: 2       # global_batch = 8 * 2 * 2 = 32
-  learning_rate: 2.0e-4
-  lr_3d_branch: 1.0e-3
+  per_device_batch_size: 40              # 180GB single GPU (5x throughput vs original 8)
+  gradient_accumulation_steps: 1        # batch already large, no accumulation needed
+  learning_rate: 7.0e-4                 # linear scaling: batch 5x → lr ~3.5x
+  lr_3d_branch: 3.5e-3                  # scale proportionally
   weight_decay: 0.01
-  warmup_ratio: 0.05
+  warmup_ratio: 0.1                     # 0.05→0.1: larger batch needs longer warmup
   max_grad_norm: 1.0
-  logging_steps: 10
-  save_steps: 500
-  eval_steps: 100
+  logging_steps: 5                      # log more often (fewer steps per epoch now)
+  save_steps: 200
+  eval_steps: 50
   seed: 42
-  use_fused_adam: true                 # FusedAdam: GPU fused kernel, ~10% faster
+  use_fused_adam: false                  # no DeepSpeed → use standard AdamW
 
 # === Checkpoint ===
 checkpoint:
@@ -74,7 +74,7 @@ checkpoint:
 # === Rendering Loss ===
 rendering_loss:
   enabled: true
-  render_size: 128                     # 2x larger than 5090 (better 3DGS supervision)
+  render_size: 192                      # 128→192: more VRAM, better 3DGS supervision
   lambda_l1: 0.8
   lambda_ssim: 0.2
   lambda_depth: 0.5
@@ -82,6 +82,6 @@ rendering_loss:
   weight: 0.1
 
 # === DeepSpeed ===
-# ZeRO-1: partition optimizer states only (sufficient for LoRA's ~37M params)
-deepspeed:
-  config: "config/deepspeed_zero1_b200.json"
+# Disabled for single-GPU: no communication overhead, pure compute
+# deepspeed:
+#   config: "config/deepspeed_zero1_b200.json"
