@@ -45,12 +45,14 @@ class DepthToGaussian(nn.Module):
         sh_degree: int = 2,
         feat_dim: int = 128,
         num_res_blocks: int = 4,
+        predict_uncertainty: bool = False,
     ):
         super().__init__()
         self.num_gaussians = num_gaussians
         self.sh_coeffs = (sh_degree + 1) ** 2 * 3  # RGB SH coefficients
         # 3(scale) + 4(rotation quaternion) + 1(opacity) + sh_coeffs
         self.param_dim = 3 + 4 + 1 + self.sh_coeffs
+        self.predict_uncertainty = predict_uncertainty
 
         # Feature extraction from RGBD (4 channels)
         self.encoder = nn.Sequential(
@@ -69,6 +71,14 @@ class DepthToGaussian(nn.Module):
             nn.GELU(),
             nn.Conv2d(feat_dim, self.param_dim, 1),
         )
+
+        # Per-pixel uncertainty prediction head
+        if predict_uncertainty:
+            self.uncertainty_head = nn.Sequential(
+                nn.Conv2d(feat_dim, feat_dim // 2, 1),
+                nn.GELU(),
+                nn.Conv2d(feat_dim // 2, 1, 1),
+            )
 
     def forward(
         self,
@@ -108,10 +118,22 @@ class DepthToGaussian(nn.Module):
         points_flat = points_down.permute(0, 2, 3, 1).reshape(B, -1, 3)  # [B, N_all, 3]
         params_flat = params.permute(0, 2, 3, 1).reshape(B, -1, self.param_dim)  # [B, N_all, param_dim]
 
+        # 5b. If predicting uncertainty, compute and concatenate with params
+        # so that _fps_select uses the same indices for both
+        if self.predict_uncertainty:
+            uncertainty_map = self.uncertainty_head(features)  # [B, 1, h, w]
+            uncertainty_flat = uncertainty_map.permute(0, 2, 3, 1).reshape(B, -1, 1)  # [B, N_all, 1]
+            params_flat = torch.cat([params_flat, uncertainty_flat], dim=-1)  # [B, N_all, param_dim+1]
+
         # 6. Farthest Point Sampling to select num_gaussians points
         gaussians_xyz, gaussians_params = self._fps_select(
             points_flat, params_flat, self.num_gaussians
         )
+
+        # 6b. Split out uncertainty after FPS selection
+        if self.predict_uncertainty:
+            raw_uncertainty = gaussians_params[..., -1:]  # [B, N, 1]
+            gaussians_params = gaussians_params[..., :-1]  # [B, N, param_dim]
 
         # 7. Activate parameters
         scale = F.softplus(gaussians_params[..., :3])  # positive scale
@@ -119,8 +141,12 @@ class DepthToGaussian(nn.Module):
         opacity = torch.sigmoid(gaussians_params[..., 7:8])  # [0, 1]
         sh = gaussians_params[..., 8:]  # SH coefficients (raw)
 
-        # 8. Concatenate: [B, N, 3+3+4+1+sh]
-        gaussians = torch.cat([gaussians_xyz, scale, rotation, opacity, sh], dim=-1)
+        # 8. Concatenate: [B, N, 3+3+4+1+sh(+1 uncertainty)]
+        parts = [gaussians_xyz, scale, rotation, opacity, sh]
+        if self.predict_uncertainty:
+            uncertainty = F.softplus(raw_uncertainty)  # always positive
+            parts.append(uncertainty)
+        gaussians = torch.cat(parts, dim=-1)
         return gaussians
 
     def _fps_select(
