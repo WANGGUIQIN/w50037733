@@ -103,6 +103,7 @@ def render_gaussians(
     intrinsics: torch.Tensor,
     image_size: tuple[int, int],
     sh_degree: int = 2,
+    uncertainty: torch.Tensor | None = None,
 ) -> dict[str, torch.Tensor]:
     """Render 3D Gaussians to a 2D image using differentiable splatting.
 
@@ -121,12 +122,14 @@ def render_gaussians(
         intrinsics: [B, 3, 3] camera intrinsics
         image_size: (H, W) output image size
         sh_degree: SH degree (0=DC only for simplified rendering)
+        uncertainty: [B, N, 1] optional per-Gaussian uncertainty values
 
     Returns:
         dict with:
             rendered_rgb: [B, 3, H, W] rendered color image
             rendered_depth: [B, 1, H, W] rendered depth map
             rendered_alpha: [B, 1, H, W] alpha/occupancy map
+            rendered_uncertainty: [B, 1, H, W] uncertainty map
     """
     B, N, _ = means_3d.shape
     H, W = image_size
@@ -229,10 +232,21 @@ def render_gaussians(
     # Total alpha
     rendered_alpha = weights.sum(dim=1, keepdim=True)
 
+    # Uncertainty rendering
+    if uncertainty is not None:
+        # Sort per-Gaussian uncertainty by depth (same order as colors/depths)
+        unc_sorted = torch.gather(uncertainty.squeeze(-1), 1, depth_order)  # [B, N]
+        rendered_uncertainty = (weights * unc_sorted.unsqueeze(-1).unsqueeze(-1)).sum(dim=1, keepdim=True)
+    else:
+        # Geometric uncertainty: depth variance
+        depth_diff_sq = (depth_vals_sorted.unsqueeze(-1).unsqueeze(-1) - rendered_depth) ** 2
+        rendered_uncertainty = (weights * depth_diff_sq).sum(dim=1, keepdim=True)
+
     return {
         "rendered_rgb": rendered_rgb.clamp(0, 1),
         "rendered_depth": rendered_depth,
         "rendered_alpha": rendered_alpha.clamp(0, 1),
+        "rendered_uncertainty": rendered_uncertainty,
     }
 
 

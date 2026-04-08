@@ -68,3 +68,52 @@ def test_d2g_uncertainty_gradient_flow():
     loss.backward()
     assert rgb.grad is not None
     assert rgb.grad.abs().sum() > 0
+
+
+def test_render_uncertainty_map():
+    """Renderer should output uncertainty map when uncertainty is provided."""
+    from models.gs_renderer import render_gaussians
+
+    B, N = 1, 32
+    means = torch.randn(B, N, 3)
+    means[..., 2] = means[..., 2].abs() + 1.0
+    scales = torch.ones(B, N, 3) * 0.1
+    rotations = torch.zeros(B, N, 4)
+    rotations[..., 0] = 1.0
+    opacities = torch.ones(B, N, 1) * 0.5
+    sh_coeffs = torch.randn(B, N, 27)
+    uncertainty = torch.rand(B, N, 1) * 0.5 + 0.01
+    intrinsics = torch.eye(3).unsqueeze(0) * 64
+    intrinsics[:, 2, 2] = 1
+
+    result = render_gaussians(
+        means, scales, rotations, opacities, sh_coeffs,
+        intrinsics, (16, 16), uncertainty=uncertainty,
+    )
+    assert "rendered_uncertainty" in result
+    assert result["rendered_uncertainty"].shape == (B, 1, 16, 16)
+    assert (result["rendered_uncertainty"] >= 0).all()
+
+
+def test_render_geometric_uncertainty_no_input():
+    """Without uncertainty input, renderer computes depth variance."""
+    from models.gs_renderer import render_gaussians
+
+    B, N = 1, 16
+    means = torch.randn(B, N, 3)
+    means[..., 2] = means[..., 2].abs() + 1.0
+    scales = torch.ones(B, N, 3) * 0.1
+    rotations = torch.zeros(B, N, 4)
+    rotations[..., 0] = 1.0
+    opacities = torch.ones(B, N, 1) * 0.5
+    sh_coeffs = torch.randn(B, N, 27)
+    intrinsics = torch.eye(3).unsqueeze(0) * 64
+    intrinsics[:, 2, 2] = 1
+
+    result = render_gaussians(
+        means, scales, rotations, opacities, sh_coeffs,
+        intrinsics, (8, 8),
+    )
+    assert "rendered_uncertainty" in result
+    assert result["rendered_uncertainty"].shape == (B, 1, 8, 8)
+    assert (result["rendered_uncertainty"] >= 0).all()
