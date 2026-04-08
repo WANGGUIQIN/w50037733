@@ -183,10 +183,18 @@ class DepthToGaussian(nn.Module):
         # Start from random point
         farthest = torch.randint(0, N, (B,), device=device)
 
+        # If predicting uncertainty and params has extra last channel, extract it
+        use_unc = self.predict_uncertainty and params.shape[-1] > self.param_dim
+        if use_unc:
+            unc = params[..., -1]  # [B, N]
+
         for i in range(num_samples):
             indices[:, i] = farthest
             centroid = points[torch.arange(B, device=device), farthest].unsqueeze(1)  # [B, 1, 3]
             dist = torch.sum((points - centroid) ** 2, dim=-1)  # [B, N]
+            if use_unc:
+                # High-uncertainty Gaussians get reduced effective distance
+                dist = dist / (1.0 + torch.sigmoid(unc) * 2.0)
             distances = torch.min(distances, dist)
             farthest = distances.argmax(dim=-1)  # [B]
 

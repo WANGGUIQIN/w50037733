@@ -313,12 +313,14 @@ class GaussianRenderingLoss(nn.Module):
         lambda_opacity: float = 0.01,
         image_size: tuple[int, int] = (64, 64),  # Render at low resolution for speed
         sh_degree: int = 2,
+        lambda_uncertainty: float = 0.1,
     ):
         super().__init__()
         self.lambda_l1 = lambda_l1
         self.lambda_ssim = lambda_ssim
         self.lambda_depth = lambda_depth
         self.lambda_opacity = lambda_opacity
+        self.lambda_uncertainty = lambda_uncertainty
         self.image_size = image_size
         self.sh_degree = sh_degree
         self.ssim = SSIMLoss(window_size=7, channels=3)
@@ -329,17 +331,20 @@ class GaussianRenderingLoss(nn.Module):
         intrinsics: torch.Tensor,
         target_rgb: torch.Tensor,
         target_depth: torch.Tensor,
+        has_uncertainty: bool = False,
     ) -> dict[str, torch.Tensor]:
         """Compute rendering loss.
 
         Args:
-            gaussians: [B, N, D] predicted Gaussians (xyz+scale+rot+opacity+sh)
+            gaussians: [B, N, D] predicted Gaussians (xyz+scale+rot+opacity+sh(+unc))
             intrinsics: [B, 3, 3] camera intrinsics
             target_rgb: [B, 3, H, W] ground truth RGB
             target_depth: [B, 1, H, W] ground truth depth
+            has_uncertainty: if True, last channel of gaussians is uncertainty
 
         Returns:
-            dict with 'loss' (total), 'l1_rgb', 'ssim', 'l1_depth', 'opacity_reg'
+            dict with 'loss' (total), 'l1_rgb', 'ssim', 'l1_depth', 'opacity_reg',
+            and optionally 'uncertainty_var'
         """
         H, W = self.image_size
 
@@ -348,7 +353,13 @@ class GaussianRenderingLoss(nn.Module):
         scales = gaussians[:, :, 3:6]
         rotations = gaussians[:, :, 6:10]
         opacities = gaussians[:, :, 10:11]
-        sh_coeffs = gaussians[:, :, 11:]
+
+        if has_uncertainty:
+            sh_coeffs = gaussians[:, :, 11:-1]
+            uncertainty = gaussians[:, :, -1:]
+        else:
+            sh_coeffs = gaussians[:, :, 11:]
+            uncertainty = None
 
         # Scale intrinsics to render resolution
         B = intrinsics.shape[0]
@@ -361,6 +372,7 @@ class GaussianRenderingLoss(nn.Module):
         rendered = render_gaussians(
             means_3d, scales, rotations, opacities, sh_coeffs,
             scaled_intrinsics, (H, W), self.sh_degree,
+            uncertainty=uncertainty,
         )
 
         # Downsample targets to render resolution
@@ -376,12 +388,24 @@ class GaussianRenderingLoss(nn.Module):
 
         # L1 Depth loss (only where alpha > 0.5)
         alpha_mask = (rendered["rendered_alpha"] > 0.5).float()
-        if alpha_mask.sum() > 0:
-            l1_depth = (
-                (rendered["rendered_depth"] - target_depth_ds).abs() * alpha_mask
-            ).sum() / alpha_mask.sum().clamp(min=1)
+        if has_uncertainty:
+            # Uncertainty-weighted depth loss
+            unc_map = rendered["rendered_uncertainty"]
+            depth_error = (rendered["rendered_depth"] - target_depth_ds).abs()
+            if alpha_mask.sum() > 0:
+                l1_depth = (depth_error / (1.0 + unc_map) * alpha_mask).sum() / alpha_mask.sum()
+            else:
+                l1_depth = torch.tensor(0.0, device=gaussians.device, dtype=gaussians.dtype)
+            # Geometry variance loss
+            uncertainty_var = rendered["rendered_uncertainty"].mean()
         else:
-            l1_depth = torch.tensor(0.0, device=gaussians.device, dtype=gaussians.dtype)
+            if alpha_mask.sum() > 0:
+                l1_depth = (
+                    (rendered["rendered_depth"] - target_depth_ds).abs() * alpha_mask
+                ).sum() / alpha_mask.sum().clamp(min=1)
+            else:
+                l1_depth = torch.tensor(0.0, device=gaussians.device, dtype=gaussians.dtype)
+            uncertainty_var = torch.tensor(0.0, device=gaussians.device, dtype=gaussians.dtype)
 
         # Opacity regularization (encourage binary: 0 or 1)
         opacity_reg = (-opacities * torch.log(opacities.clamp(min=1e-6))
@@ -393,6 +417,7 @@ class GaussianRenderingLoss(nn.Module):
             + self.lambda_ssim * ssim_loss
             + self.lambda_depth * l1_depth
             + self.lambda_opacity * opacity_reg
+            + self.lambda_uncertainty * uncertainty_var
         )
 
         return {
@@ -401,4 +426,5 @@ class GaussianRenderingLoss(nn.Module):
             "ssim": ssim_val,
             "l1_depth": l1_depth,
             "opacity_reg": opacity_reg,
+            "uncertainty_var": uncertainty_var,
         }

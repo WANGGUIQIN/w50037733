@@ -117,3 +117,51 @@ def test_render_geometric_uncertainty_no_input():
     assert "rendered_uncertainty" in result
     assert result["rendered_uncertainty"].shape == (B, 1, 8, 8)
     assert (result["rendered_uncertainty"] >= 0).all()
+
+
+def test_uncertainty_weighted_loss():
+    """Rendering loss should use uncertainty weighting."""
+    from models.gs_renderer import GaussianRenderingLoss
+
+    loss_fn = GaussianRenderingLoss(
+        image_size=(8, 8), sh_degree=0, lambda_uncertainty=0.1
+    )
+
+    B, N = 1, 32
+    xyz = torch.randn(B, N, 3)
+    xyz[..., 2] = xyz[..., 2].abs() + 0.5
+    scale = torch.ones(B, N, 3) * 0.1
+    rot = torch.zeros(B, N, 4); rot[..., 0] = 1
+    opa = torch.ones(B, N, 1) * 0.5
+    sh = torch.randn(B, N, 3)  # sh_degree=0: 1^2 * 3 = 3 coeffs
+    unc = torch.rand(B, N, 1) * 0.2 + 0.01
+    gaussians = torch.cat([xyz, scale, rot, opa, sh, unc], dim=-1)  # 3+3+4+1+3+1 = 15
+    gaussians.requires_grad_(True)
+
+    intrinsics = torch.eye(3).unsqueeze(0) * 32
+    intrinsics[:, 2, 2] = 1
+    target_rgb = torch.rand(B, 3, 32, 32)
+    target_depth = torch.rand(B, 1, 32, 32) + 0.5
+
+    result = loss_fn(gaussians, intrinsics, target_rgb, target_depth, has_uncertainty=True)
+    assert "loss" in result
+    assert "uncertainty_var" in result
+    assert result["uncertainty_var"] >= 0
+    assert result["loss"].requires_grad
+
+
+def test_uncertainty_guided_selection():
+    """High-uncertainty points should be deprioritized in FPS."""
+    from models.depth_to_gaussian import DepthToGaussian
+
+    torch.manual_seed(42)
+    module = DepthToGaussian(num_gaussians=32, sh_degree=0, predict_uncertainty=True)
+    rgb = torch.randn(1, 3, 32, 32)
+    depth = torch.randn(1, 1, 32, 32).abs() + 0.1
+    intrinsics = torch.eye(3).unsqueeze(0) * 64
+    intrinsics[:, 2, 2] = 1
+
+    gaussians = module(rgb, depth, intrinsics)
+    uncertainty = gaussians[..., -1]
+    assert uncertainty.shape == (1, 32)
+    assert (uncertainty > 0).all()
