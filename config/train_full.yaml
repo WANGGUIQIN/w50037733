@@ -1,29 +1,26 @@
-# RoboBrain-3DGS Full Fine-tuning Configuration
+# RoboBrain-3DGS Full Fine-tuning Configuration (4x B200)
 # Usage:
 #   deepspeed --num_gpus=4 train.py --config config/train_full.yaml
 # Note: Full fine-tuning of 8B model requires ZeRO-3 + all 4 GPUs
 
 # === Model ===
 model:
-  base_model: "/home/w50037733/models/RoboBrain2.5-8B-NV"
+  base_model: "/home/edge/Embodied/models/RoboBrain2.5-8B-NV"
   num_gaussians: 1024
   sh_degree: 2
   num_gs_tokens: 64
   gs_encoder_dim: 512
-  freeze_vision_encoder: true   # Always freeze ViT (pretrained features are valuable)
+  freeze_vision_encoder: true
+  predict_uncertainty: true
   torch_dtype: "bfloat16"
 
 # === Fine-tuning Mode ===
-# "lora" or "full"
 finetune_mode: "full"
 
 # === Full Fine-tuning Configuration ===
 full_finetune:
-  # Which LLM layers to unfreeze (-1 = all)
-  # Partial: only unfreeze last N layers (saves memory, often sufficient)
-  unfreeze_llm_layers: -1       # -1 = all layers
+  unfreeze_llm_layers: -1        # -1 = all layers
   unfreeze_lm_head: true
-  # Gradient checkpointing to reduce memory at cost of ~30% more compute
   gradient_checkpointing: true
 
 # === Prompt (Qwen3-VL chat template) ===
@@ -37,47 +34,45 @@ prompt:
 
 # === Data ===
 data:
-  rlbench_root: "/home/w50037733/robobrain_3dgs/data/rlbench_sample"
-  droid_root: "/home/w50037733/robobrain_3dgs/data/droid_sample"
+  unified_root: "/home/edge/Embodied/robobrain_3dgs/data/processed"
+  unified_datasets: null
+  unified_task_type: "affordance"
   image_size: 256
   camera: "front"
   max_frames: -1
 
-# === Training ===
+# === Training (4x B200, 192GB each) ===
 training:
-  output_dir: "/home/w50037733/robobrain_3dgs/outputs/full"
+  output_dir: "/home/edge/Embodied/robobrain_3dgs/outputs/full"
   num_epochs: 3
-  per_device_batch_size: 1      # Smaller batch for full fine-tuning (more memory)
+  per_device_batch_size: 4       # B200 192GB + ZeRO-3: 4 per GPU, effective = 4*4*8 = 128
   gradient_accumulation_steps: 8
-  learning_rate: 5.0e-5         # Lower LR for pretrained LLM weights
-  lr_3d_branch: 1.0e-3          # Higher LR for 3D branch (new params)
+  learning_rate: 5.0e-5          # Lower LR for pretrained LLM weights
+  lr_3d_branch: 1.0e-3           # Higher LR for 3D branch
   weight_decay: 0.01
-  warmup_ratio: 0.1             # Longer warmup for full fine-tuning
+  warmup_ratio: 0.1
   max_grad_norm: 1.0
   logging_steps: 10
   save_steps: 500
-  eval_steps: 100
+  eval_steps: 200
   seed: 42
 
 # === Rendering Loss ===
 rendering_loss:
   enabled: true
-  render_size: 64
+  render_size: 128
   lambda_l1: 0.8
   lambda_ssim: 0.2
   lambda_depth: 0.5
   lambda_opacity: 0.01
+  lambda_uncertainty: 0.1
   weight: 0.1
 
 # === Checkpoint ===
-# Full fine-tuning: each checkpoint ~24 GB (8 GB weights + 16 GB Adam states)
-# keep_last_n=2 + best = 3 checkpoints max on disk (~72 GB)
-# Set save_optimizer_state: false to cut to ~24 GB total (no resume capability)
 checkpoint:
   keep_last_n: 2
   save_optimizer_state: true
 
 # === DeepSpeed ===
-# Full fine-tuning needs ZeRO-3 to shard model weights across GPUs
 deepspeed:
-  config: "/home/w50037733/robobrain_3dgs/config/deepspeed_zero3.json"
+  config: "/home/edge/Embodied/robobrain_3dgs/config/deepspeed_zero3.json"
