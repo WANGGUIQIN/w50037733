@@ -116,6 +116,7 @@ class RoboBrain3DGS_VLM(nn.Module):
             num_gaussians=num_gaussians,
             sh_degree=sh_degree,
             feat_dim=128,
+            predict_uncertainty=True,
         )
 
         self.gs_encoder = GaussianEncoder(
@@ -229,8 +230,15 @@ class RoboBrain3DGS_VLM(nn.Module):
         """
         # RGBD -> 3D Gaussians
         gaussians = self.depth_to_gaussian(rgb, depth, intrinsics)
+
+        # Strip uncertainty before encoding for LLM
+        if self.depth_to_gaussian.predict_uncertainty:
+            gaussians_for_encoder = gaussians[..., :-1]
+        else:
+            gaussians_for_encoder = gaussians
+
         # 3D Gaussians -> raw tokens
-        raw_tokens = self.gs_encoder(gaussians)  # [B, N, gs_encoder_dim]
+        raw_tokens = self.gs_encoder(gaussians_for_encoder)  # [B, N, gs_encoder_dim]
 
         # Fuse with 2D if available, else simple projection
         if vit_tokens is not None and self.fusion is not None:
@@ -240,7 +248,7 @@ class RoboBrain3DGS_VLM(nn.Module):
 
         # Add type embedding
         gs_tokens = gs_tokens + self.gs_type_embedding
-        return gs_tokens, gaussians
+        return gs_tokens, gaussians  # return FULL gaussians (with unc) for rendering loss
 
     def forward(
         self,
@@ -511,6 +519,7 @@ class RoboBrain3DGS_VLM(nn.Module):
             num_gaussians=num_gaussians,
             sh_degree=sh_degree,
             feat_dim=128,
+            predict_uncertainty=True,
         )
         model.gs_encoder = GaussianEncoder(
             gaussian_dim=gaussian_dim,

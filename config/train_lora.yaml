@@ -11,6 +11,7 @@ model:
   num_gs_tokens: 64
   gs_encoder_dim: 512
   freeze_vision_encoder: true
+  predict_uncertainty: true
   torch_dtype: "bfloat16"
 
 # === Fine-tuning Mode ===
@@ -75,6 +76,7 @@ rendering_loss:
   lambda_ssim: 0.2
   lambda_depth: 0.5
   lambda_opacity: 0.01
+  lambda_uncertainty: 0.1
   weight: 0.1
 
 # === Checkpoint ===
