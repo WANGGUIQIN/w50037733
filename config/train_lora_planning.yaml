@@ -1,0 +1,87 @@
+# RoboBrain-3DGS LoRA Fine-tuning Configuration (4x B200)
+# Usage:
+#   deepspeed --num_gpus=4 train.py --config config/train_lora.yaml
+
+# === Model ===
+model:
+  base_model: "/home/edge/Embodied/models/RoboBrain2.5-8B-NV"
+  num_gaussians: 1024
+  sh_degree: 2
+  num_gs_tokens: 64
+  gs_encoder_dim: 512
+  freeze_vision_encoder: true
+  predict_uncertainty: true    # VarSplat-inspired per-Gaussian uncertainty
+  torch_dtype: "bfloat16"
+
+# === Fine-tuning Mode ===
+# "lora" or "full"
+finetune_mode: "lora"
+
+# === LoRA Configuration ===
+lora:
+  r: 16
+  lora_alpha: 32
+  lora_dropout: 0.05
+  target_modules:
+    - "q_proj"
+    - "v_proj"
+    - "k_proj"
+    - "o_proj"
+  bias: "none"
+  task_type: "CAUSAL_LM"
+
+# === Prompt (Qwen3-VL chat template) ===
+prompt:
+  system_prompt: >-
+    You are RoboBrain, an embodied AI assistant specialized in robotic
+    manipulation. Given an image of a scene with 3D spatial understanding,
+    provide precise affordance predictions and manipulation constraints.
+  disable_system_prompt: false
+  max_seq_length: 512
+
+# === Data ===
+data:
+  # Use unified processed dataset (all 12 datasets)
+  unified_root: "/home/edge/Embodied/robobrain_3dgs/data/processed"
+  unified_datasets:
+    - "rlbench"       # null = all datasets
+  unified_task_type: "planning"
+  image_size: 256
+  camera: "front"
+  max_frames: -1               # -1 = all
+
+# === Training (4x B200, 192GB each) ===
+training:
+  output_dir: "/home/edge/Embodied/robobrain_3dgs/outputs/lora_planning"
+  num_epochs: 3
+  per_device_batch_size: 8     # B200 192GB: 8 per GPU, effective batch = 8*4*4 = 128
+  gradient_accumulation_steps: 4
+  learning_rate: 2.0e-4        # LoRA adapter LR
+  lr_3d_branch: 1.0e-3         # 3D branch LR (new params, higher)
+  weight_decay: 0.01
+  warmup_ratio: 0.05
+  max_grad_norm: 1.0
+  logging_steps: 10
+  save_steps: 500
+  eval_steps: 200
+  seed: 42
+
+# === Rendering Loss ===
+rendering_loss:
+  enabled: true
+  render_size: 128             # B200 has enough VRAM for higher-res rendering
+  lambda_l1: 0.8
+  lambda_ssim: 0.2
+  lambda_depth: 0.5
+  lambda_opacity: 0.01
+  lambda_uncertainty: 0.1      # VarSplat geometry variance loss
+  weight: 0.1
+
+# === Checkpoint ===
+checkpoint:
+  keep_last_n: 3
+  save_optimizer_state: true
+
+# === DeepSpeed ===
+deepspeed:
+  config: "/home/edge/Embodied/robobrain_3dgs/config/deepspeed_zero2_b200.json"
