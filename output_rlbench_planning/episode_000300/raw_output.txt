@@ -1,0 +1,90 @@
+```json
+{
+  "task": "take the steak off the grill",
+  "scene_objects": [
+    {
+      "name": "grill",
+      "affordances": [
+        {
+          "type": "grill",
+          "point": [529, 500]
+        }
+      ],
+      "spatial_relations": {
+        "position": {
+          "x": 0.5,
+          "y": 0.0,
+          "z": 0.6
+        }
+      }
+    },
+    {
+      "name": "steak",
+      "affordances": [
+        {
+          "type": "grill_item",
+          "point": [550, 525]
+        }
+      ],
+      "spatial_relations": {
+        "position": {
+          "x": 0.52,
+          "y": 0.0,
+          "z": 0.62
+        }
+      }
+    }
+  ],
+  "num_steps": 3,
+  "steps": [
+    {
+      "step": 1,
+      "action": "reach",
+      "target": "grill",
+      "affordance": [529, 500],
+      "approach": [0.0, 0.0, 0.6],
+      "constraints": {
+        "contact": {
+          "safety": true
+        },
+        "spatial": {
+          "completion": "grill is within reach"
+        }
+      },
+      "done_when": "robot arm reaches the grill"
+    },
+    {
+      "step": 2,
+      "action": "grasp",
+      "target": "steak",
+      "affordance": [550, 525],
+      "approach": [0.0, 0.0, 0.62],
+      "constraints": {
+        "contact": {
+          "completion": "grasp the steak"
+        },
+        "spatial": {
+          "progress": "steak is now held by the robot"
+        }
+      },
+      "done_when": "steak is grasped"
+    },
+    {
+      "step": 3,
+      "action": "transport",
+      "target": "steak",
+      "affordance": [550, 525],
+      "approach": [0.0, 0.0, 0.62],
+      "constraints": {
+        "contact": {
+          "safety": true
+        },
+        "spatial": {
+          "progress": "steak is moved away from the grill"
+        }
+      },
+      "done_when": "steak is transported to a new location"
+    }
+  ]
+}
+```

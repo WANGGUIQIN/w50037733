@@ -1,0 +1,39 @@
+{
+  "episode_id": "episode_000300",
+  "task": "take the steak off the grill",
+  "model": "/home/edge/Embodied/models/RoboBrain2.5-8B-NV",
+  "keyframe_used": 0,
+  "source_image": "/home/edge/Embodied/robobrain_3dgs/data/processed/rlbench/episode_000300/rgb_0.png",
+  "episode_meta": {
+    "task": "take the steak off the grill",
+    "intrinsics": [
+      [
+        128.0,
+        0,
+        128.0
+      ],
+      [
+        0,
+        128.0,
+        128.0
+      ],
+      [
+        0,
+        0,
+        1
+      ]
+    ],
+    "keyframe_indices": [
+      0,
+      26,
+      52,
+      79,
+      131
+    ],
+    "source": "rlbench",
+    "episode_id": "episode_000300",
+    "depth_type": "native",
+    "robot": "franka_panda",
+    "num_frames_total": 132
+  }
+}

@@ -2,9 +2,13 @@ __pycache__/
 *.pyc
 *.pyo
 
-# Data (sample datasets, too large for git)
+# Data (processed datasets, too large for git)
 data/rlbench_sample/
 data/droid_sample/
+data/processed/
+
+# Pipeline cache
+.cache/
 
 # Training outputs
 outputs/
@@ -18,3 +22,8 @@ outputs/
 # Environment
 .env
 *.log
+
+# Inference result images (binary)
+output_rlbench_planning/*/rgb_*.png
+output_bridge_planning/*/rgb_*.png
+result/

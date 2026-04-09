@@ -1,0 +1,78 @@
+# Test training config — dry-run validation on local RLBench data
+# Usage: python train.py --config config/train_test.yaml --dry_run
+
+# === Model ===
+model:
+  base_model: "/home/edge/Embodied/models/RoboBrain2.5-8B-NV"
+  num_gaussians: 256
+  sh_degree: 2
+  num_gs_tokens: 16
+  gs_encoder_dim: 256
+  freeze_vision_encoder: true
+  predict_uncertainty: true
+  torch_dtype: "bfloat16"
+
+# === Fine-tuning Mode ===
+finetune_mode: "lora"
+
+# === LoRA Configuration ===
+lora:
+  r: 8
+  lora_alpha: 16
+  lora_dropout: 0.05
+  target_modules:
+    - "q_proj"
+    - "v_proj"
+  bias: "none"
+  task_type: "CAUSAL_LM"
+
+# === Prompt ===
+prompt:
+  system_prompt: >-
+    You are RoboBrain, an embodied AI assistant specialized in robotic
+    manipulation. Given an image of a scene with 3D spatial understanding,
+    provide precise affordance predictions and manipulation constraints.
+  disable_system_prompt: false
+  max_seq_length: 256
+
+# === Data ===
+data:
+  unified_root: "/home/edge/Embodied/robobrain_3dgs/data/processed"
+  unified_datasets:
+    - "rlbench"
+  unified_task_type: "affordance"
+  image_size: 256
+  camera: "front"
+  max_frames: 20
+
+# === Training ===
+training:
+  output_dir: "/home/edge/Embodied/robobrain_3dgs/outputs/test"
+  num_epochs: 1
+  per_device_batch_size: 1
+  gradient_accumulation_steps: 1
+  learning_rate: 2.0e-4
+  lr_3d_branch: 1.0e-3
+  weight_decay: 0.01
+  warmup_ratio: 0.1
+  max_grad_norm: 1.0
+  logging_steps: 1
+  save_steps: 999999
+  eval_steps: 999999
+  seed: 42
+
+# === Rendering Loss ===
+rendering_loss:
+  enabled: true
+  render_size: 32
+  lambda_l1: 0.8
+  lambda_ssim: 0.2
+  lambda_depth: 0.5
+  lambda_opacity: 0.01
+  lambda_uncertainty: 0.1
+  weight: 0.1
+
+# === Checkpoint ===
+checkpoint:
+  keep_last_n: 1
+  save_optimizer_state: false

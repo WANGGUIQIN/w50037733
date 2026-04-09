@@ -1,0 +1,86 @@
+```json
+{
+  "task": "put pot or pan on stove and put pickle in pot or pan",
+  "scene_objects": [
+    {
+      "id": "pot",
+      "label": "stainless steel pot",
+      "affordance": [0.62, 0.28],
+      "properties": ["liquid-containing", "fragile"]
+    },
+    {
+      "id": "pickle",
+      "label": "green pickle",
+      "affordance": [0.33, 0.26],
+      "properties": []
+    }
+  ],
+  "num_steps": 4,
+  "steps": [
+    {
+      "step": 1,
+      "action": "reach",
+      "target": "pot",
+      "destination": "pot",
+      "affordance": [0.62, 0.28],
+      "approach": [0.27, -0.16, 0.62],
+      "constraints": {
+        "contact": "none",
+        "safety": "none",
+        "progress": "none",
+        "pose": "none",
+        "direction": "none"
+      },
+      "done_when": "robot arm reaches over the pot"
+    },
+    {
+      "step": 2,
+      "action": "grasp",
+      "target": "pot",
+      "destination": "pot",
+      "affordance": [0.62, 0.28],
+      "approach": [0.27, -0.16, 0.62],
+      "constraints": {
+        "contact": "grasp",
+        "safety": "none",
+        "progress": "none",
+        "pose": "none",
+        "direction": "none"
+      },
+      "done_when": "robot arm grips the pot handle"
+    },
+    {
+      "step": 3,
+      "action": "transport",
+      "target": "pot",
+      "destination": "pot",
+      "affordance": [0.62, 0.28],
+      "approach": [0.27, -0.16, 0.62],
+      "constraints": {
+        "contact": "grasp",
+        "safety": "none",
+        "progress": "none",
+        "pose": "none",
+        "direction": "none"
+      },
+      "done_when": "robot arm lifts the pot"
+    },
+    {
+      "step": 4,
+      "action": "place",
+      "target": "pot",
+      "destination": "pot",
+      "affordance": [0.62, 0.28],
+      "approach": [0.27, -0.16, 0.62],
+      "constraints": {
+        "contact": "place",
+        "safety": "none",
+        "progress": "none",
+        "pose": "none",
+        "direction": "none"
+      },
+      "done_when": "robot arm releases the pot"
+    }
+  ]
+}
+```

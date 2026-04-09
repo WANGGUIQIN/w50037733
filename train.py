@@ -54,6 +54,7 @@ from models.robobrain_vlm import RoboBrain3DGS_VLM
 from models.gs_renderer import GaussianRenderingLoss
 from data.rlbench_loader import RLBenchDataset
 from data.droid_loader import DROIDDataset
+from data.unified_loader import UnifiedDataset
 from utils.prompt_utils import build_chat_inputs, DEFAULT_SYSTEM_PROMPT, DEFAULT_TASK_TYPE
 
 
@@ -131,6 +132,18 @@ def build_datasets(cfg: dict):
             max_frames=data_cfg.get("max_frames", -1),
         )
         print(f"  DROID: {len(ds)} samples")
+        datasets.append(ds)
+
+    # Unified processed datasets (planning or affordance mode)
+    if data_cfg.get("unified_root") and os.path.exists(data_cfg["unified_root"]):
+        ds = UnifiedDataset(
+            root_dir=data_cfg["unified_root"],
+            datasets=data_cfg.get("unified_datasets"),
+            image_size=data_cfg.get("image_size", 256),
+            task_type=data_cfg.get("unified_task_type", "planning"),
+            max_episodes=data_cfg.get("max_frames", -1),
+        )
+        print(f"  Unified ({data_cfg.get('unified_task_type', 'planning')}): {len(ds)} samples")
         datasets.append(ds)
 
     if not datasets:

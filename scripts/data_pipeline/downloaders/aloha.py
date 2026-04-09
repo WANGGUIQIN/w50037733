@@ -40,10 +40,10 @@ def stream_aloha_datasets(cache_dir: str = "/tmp/aloha_cache"):
             video_path_template = info.get("video_path", "")
             chunks_size = info.get("chunks_size", 1000)
 
-            # Get tasks
-            tasks_path = hf_hub_download(repo, "meta/tasks.jsonl", repo_type="dataset", cache_dir=cache_dir)
+            # Get tasks (optional, may not exist)
             task_desc = task_name.replace("_", " ")
             try:
+                tasks_path = hf_hub_download(repo, "meta/tasks.jsonl", repo_type="dataset", cache_dir=cache_dir)
                 with open(tasks_path) as f:
                     for line in f:
                         t = json.loads(line)
@@ -51,7 +51,7 @@ def stream_aloha_datasets(cache_dir: str = "/tmp/aloha_cache"):
                             task_desc = t["task"]
                             break
             except Exception:
-                pass
+                pass  # tasks.jsonl is optional
 
             # Get actions from parquet
             ep_actions = _load_all_actions(repo, info, cache_dir)

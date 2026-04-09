@@ -1,0 +1,39 @@
+{
+  "episode_id": "episode_000700",
+  "task": "put pot or pan on stove and put pickle in pot or pan",
+  "model": "/home/edge/Embodied/models/RoboBrain2.5-8B-NV",
+  "keyframe_used": 0,
+  "source_image": "./data/processed/bridge/episode_000700/rgb_0.png",
+  "episode_meta": {
+    "task": "put pot or pan on stove and put pickle in pot or pan",
+    "intrinsics": [
+      [
+        222.7,
+        0,
+        128.0
+      ],
+      [
+        0,
+        222.7,
+        128.0
+      ],
+      [
+        0,
+        0,
+        1
+      ]
+    ],
+    "keyframe_indices": [
+      0,
+      22,
+      46,
+      58,
+      78
+    ],
+    "source": "bridge",
+    "episode_id": "episode_000700",
+    "depth_type": "pseudo",
+    "robot": "widowx",
+    "num_frames_total": 79
+  }
+}

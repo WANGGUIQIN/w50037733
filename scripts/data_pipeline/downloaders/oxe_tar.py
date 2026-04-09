@@ -35,6 +35,7 @@ OXE_DATASETS = {
         "tar_prefix": "taco_play/taco_play",
         "default_task": "free play manipulation",
         "image_key": "rgb_static",
+        "depth_key": "depth_static",
     },
     "jaco_play": {
         "robot": "kinova_jaco", "num_tars": 2,
@@ -61,6 +62,7 @@ OXE_DATASETS = {
                       "nyu_franka_play_dataset_converted_externally_to_rlds",
         "default_task": "free play manipulation",
         "image_key": "image",
+        "depth_key": "depth",
     },
     "utokyo_xarm_bimanual_converted_externally_to_rlds": {
         "robot": "dual_xarm", "num_tars": 1,
@@ -109,6 +111,7 @@ def stream_oxe_dataset(dataset_name: str, cache_dir: str = "/tmp/oxe_cache"):
 def _parse_tar_pickles(tar_path: str, meta: dict, ep_offset: int):
     """Parse tar of pickle files. Each pickle is one episode."""
     image_key = meta.get("image_key", "image")
+    depth_key = meta.get("depth_key")
 
     with tarfile.open(tar_path, "r") as tf:
         for member in tf:
@@ -130,6 +133,7 @@ def _parse_tar_pickles(tar_path: str, meta: dict, ep_offset: int):
                 continue
 
             rgb_frames = []
+            depth_frames = []
             actions = []
             task = meta["default_task"]
 
@@ -144,6 +148,18 @@ def _parse_tar_pickles(tar_path: str, meta: dict, ep_offset: int):
                         rgb_frames.append(np.array(img))
                     except Exception:
                         pass
+
+                # Extract native depth (16-bit PNG, uint16 millimeters -> float32 meters)
+                if depth_key:
+                    d_bytes = obs.get(depth_key)
+                    if d_bytes and isinstance(d_bytes, bytes):
+                        try:
+                            d_img = Image.open(io.BytesIO(d_bytes))
+                            d_arr = np.array(d_img, dtype=np.float32) / 1000.0
+                            d_arr = np.clip(d_arr, 0.01, 5.0)
+                            depth_frames.append(d_arr)
+                        except Exception:
+                            pass
 
                 # Extract action
                 act_data = step.get("action", {})
@@ -171,13 +187,23 @@ def _parse_tar_pickles(tar_path: str, meta: dict, ep_offset: int):
             if len(rgb_frames) < 2:
                 continue
 
-            yield {
+            has_depth = (
+                depth_key
+                and len(depth_frames) == len(rgb_frames)
+            )
+
+            ep = {
                 "episode_id": f"episode_{ep_offset:06d}",
                 "rgb_frames": rgb_frames,
                 "actions": np.stack(actions) if actions else None,
                 "task": task,
                 "robot": meta["robot"],
             }
+            if has_depth:
+                ep["depth_frames"] = depth_frames
+                ep["depth_type"] = "native"
+
+            yield ep
             ep_offset += 1
 
 

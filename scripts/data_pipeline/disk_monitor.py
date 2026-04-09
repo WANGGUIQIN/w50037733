@@ -3,7 +3,7 @@ import shutil
 
 
 def check_disk(
-    path: str = "/home/w50037733",
+    path: str = "/home/edge",
     warn_gb: float = 100,
     critical_gb: float = 50,
 ) -> str:
@@ -16,5 +16,5 @@ def check_disk(
     return "ok"
 
 
-def get_free_gb(path: str = "/home/w50037733") -> float:
+def get_free_gb(path: str = "/home/edge") -> float:
     return shutil.disk_usage(path).free / 1e9

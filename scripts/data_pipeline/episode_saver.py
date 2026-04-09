@@ -19,8 +19,20 @@ def save_episode(
     robot: str = "unknown",
     num_frames_total: int = 0,
     image_size: int = 256,
+    min_frames: int = 2,
 ):
-    """Save one episode to disk in unified format."""
+    """Save one episode to disk in unified format.
+
+    Args:
+        min_frames: Minimum frames required to save episode. Episodes with
+            fewer frames will be skipped (returns False).
+    """
+    num_frames = len(rgb_frames)
+
+    # Skip episodes with too few frames
+    if num_frames < min_frames:
+        return False
+
     ep_dir = os.path.join(output_dir, dataset_name, episode_id)
     os.makedirs(ep_dir, exist_ok=True)
 
@@ -47,6 +59,9 @@ def save_episode(
         "depth_type": depth_type,
         "robot": robot,
         "num_frames_total": num_frames_total,
+        "num_keyframes": num_frames,
     }
     with open(os.path.join(ep_dir, "meta.json"), "w") as f:
         json.dump(meta, f, indent=2)
+
+    return True

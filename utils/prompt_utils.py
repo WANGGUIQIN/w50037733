@@ -29,6 +29,20 @@ DEFAULT_SYSTEM_PROMPT = (
     "provide precise affordance predictions and manipulation constraints."
 )
 
+PLANNING_SYSTEM_PROMPT = (
+    "You are RoboBrain, an embodied AI assistant with 3D spatial understanding "
+    "specialized in robotic manipulation planning. "
+    "Given a scene image and a task instruction, output a structured task "
+    "decomposition with operation primitives and per-stage geometric constraints. "
+    "Follow a 3-step reasoning process: "
+    "1) SCENE ANALYSIS: identify task-relevant objects and their spatial relations; "
+    "2) TASK DECOMPOSITION: break the task into 2-5 operation primitives at "
+    "manipulation-semantic granularity; "
+    "3) CONSTRAINT SPECIFICATION: for each stage, specify constraints organized by "
+    "category (contact, spatial, pose, direction, safety) with role labels "
+    "(completion, safety, progress)."
+)
+
 DEFAULT_TASK_TYPE = "affordance"
 
 # Marker that separates prompt from assistant response in the chat template
@@ -65,6 +79,16 @@ TASK_TEMPLATES = {
     "grounding": (
         "Please provide the bounding box coordinate of the region this "
         "sentence describes: {text}."
+    ),
+    # Task planning: decompose into operation primitives with constraints
+    "planning": (
+        'Analyze the scene and plan the manipulation steps to complete the '
+        'task: "{text}". For each step, provide: the operation primitive '
+        '(reach/grasp/transport/place/push/pull/insert/pour/rotate/release/flip/wipe), '
+        'target object, affordance point [u, v], approach direction [x, y, z], '
+        'and constraints organized by category (contact, spatial, pose, direction, '
+        'safety) with role labels (completion, safety, progress). '
+        'Include a done_when completion condition for each step.'
     ),
     # General VQA: pass through as-is
     "general": "{text}",
@@ -109,6 +133,137 @@ def parse_affordance_output(text: str) -> dict:
     return out
 
 
+_STEP_RE = re.compile(
+    r"Step\s+(\d+):\s*(\w+)\(([^)]*)\)", re.I,
+)
+
+# Matches "action(target -> destination)" pattern
+_STEP_DEST_RE = re.compile(
+    r"Step\s+(\d+):\s*(\w+)\((.+?)\s*->\s*(.+?)\)", re.I,
+)
+
+# Matches constraint lines: "category: pred(args) [role]; pred(args) [role]"
+_CONSTRAINT_CATEGORIES = {"contact", "spatial", "pose", "direction", "safety"}
+_CONSTRAINT_LINE_RE = re.compile(
+    r"^\s*(contact|spatial|pose|direction|safety):\s*(.+)$", re.I | re.M,
+)
+_PRED_RE = re.compile(
+    r"(\w+)\(([^)]*)\)\s*(?:\[(\w+)\])?",
+)
+
+# Matches "Scene: obj1, obj2, ..." line
+_SCENE_RE = re.compile(r"^Scene:\s*(.+)$", re.I | re.M)
+
+
+def parse_planning_output(text: str) -> dict:
+    """Parse task planning output into structured steps with constraints.
+
+    Handles both the new format (with constraint categories and Scene line)::
+
+        Scene: red_block, blue_plate, table
+        Step 1: reach(red_block)
+          affordance: [0.35, 0.48], approach: [0.00, 0.00, -1.00]
+          contact: gripper_state(open) [progress]
+          spatial: distance(gripper, red_block, <, 0.03) [completion]
+          safety: no_collision(gripper, blue_plate)
+          done_when: distance(gripper, red_block) < 0.03 AND gripper_state(open)
+
+    and the legacy format (flat gripper field, no categories)::
+
+        Step 1: reach(cup handle)
+          affordance: [0.35, 0.42], approach: [0, 1, 0], gripper: open
+          done_when: gripper_near(cup_handle)
+
+    Returns:
+        dict with keys: scene_objects (list), steps (list of step dicts).
+        Each step dict has: step, action, target, destination (optional),
+        affordance, approach, constraints (dict of category->list), done_when.
+    """
+    result = {"scene_objects": [], "steps": []}
+
+    # Parse scene objects
+    scene_m = _SCENE_RE.search(text)
+    if scene_m:
+        result["scene_objects"] = [
+            o.strip() for o in scene_m.group(1).split(",") if o.strip()
+        ]
+
+    # Split by "Step N:" markers
+    parts = re.split(r"(?=Step\s+\d+:)", text.strip())
+    for part in parts:
+        part = part.strip()
+        if not part:
+            continue
+
+        step: dict = {"constraints": {}}
+
+        # Try destination pattern first: "action(target -> dest)"
+        m = _STEP_DEST_RE.search(part)
+        if m:
+            step["step"] = int(m.group(1))
+            step["action"] = m.group(2)
+            step["target"] = m.group(3).strip()
+            step["destination"] = m.group(4).strip()
+        else:
+            m = _STEP_RE.search(part)
+            if m:
+                step["step"] = int(m.group(1))
+                step["action"] = m.group(2)
+                step["target"] = m.group(3).strip()
+
+        if "step" not in step:
+            continue
+
+        # Parse affordance
+        m = _AFF_RE.search(part)
+        if m:
+            step["affordance"] = [float(m.group(1)), float(m.group(2))]
+
+        # Parse approach (handle both "approach: [...]" and "approach=[...]")
+        app_m = re.search(
+            r"approach[=:\s]+\[([-0-9.e+]+)[,\s]+([-0-9.e+]+)[,\s]+([-0-9.e+]+)\]",
+            part, re.I,
+        )
+        if app_m:
+            step["approach"] = [float(app_m.group(i)) for i in range(1, 4)]
+
+        # Parse constraint categories (new format)
+        for cat_m in _CONSTRAINT_LINE_RE.finditer(part):
+            category = cat_m.group(1).lower()
+            constraint_str = cat_m.group(2)
+            constraints = []
+            for pred_m in _PRED_RE.finditer(constraint_str):
+                c = {
+                    "pred": pred_m.group(1),
+                    "args": [a.strip() for a in pred_m.group(2).split(",") if a.strip()],
+                }
+                if pred_m.group(3):
+                    c["role"] = pred_m.group(3)
+                elif category == "safety":
+                    c["role"] = "safety"
+                constraints.append(c)
+            if constraints:
+                step["constraints"][category] = constraints
+
+        # Legacy format fallback: parse gripper field
+        if not step["constraints"]:
+            m = _WID_RE.search(part)
+            if m:
+                step["gripper_width"] = float(m.group(1))
+            gripper_m = re.search(r"gripper:\s*(\S+)", part, re.I)
+            if gripper_m:
+                step["gripper"] = gripper_m.group(1).strip().rstrip(",")
+
+        # Parse done_when
+        done_m = re.search(r"done_when:\s*(.+?)(?:\n|$)", part, re.I)
+        if done_m:
+            step["done_when"] = done_m.group(1).strip()
+
+        result["steps"].append(step)
+
+    return result
+
+
 # ---------------------------------------------------------------------------
 # Prompt building
 # ---------------------------------------------------------------------------
@@ -144,6 +299,10 @@ def build_messages(
         List of message dicts ready for apply_chat_template().
     """
     augmented = augment_prompt(user_text, task_type)
+
+    # Use planning-specific system prompt when task_type is "planning"
+    if task_type == "planning" and system_prompt == DEFAULT_SYSTEM_PROMPT:
+        system_prompt = PLANNING_SYSTEM_PROMPT
 
     messages = []
     if system_prompt:
