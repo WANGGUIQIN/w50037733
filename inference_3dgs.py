@@ -92,6 +92,15 @@ _TASK_PROMPTS = {
         "the affordance coordinates as [u, v] in normalized image space, "
         "gripper_width, and approach vector as [x, y, z]."
     ),
+    "planning": (
+        'Analyze the scene and plan the manipulation steps to complete the '
+        'task: "{text}". For each step, provide: the operation primitive '
+        '(reach/grasp/transport/place/push/pull/insert/pour/rotate/release/flip/wipe), '
+        'target object, affordance point [u, v], approach direction [x, y, z], '
+        'and constraints organized by category (contact, spatial, pose, direction, '
+        'safety) with role labels (completion, safety, progress). '
+        'Include a done_when completion condition for each step.'
+    ),
     "general": "{text}",
 }
 
@@ -345,7 +354,7 @@ class UnifiedInference3DGS:
         if isinstance(image, str):
             image = [image]
 
-        valid_tasks = ["general", "pointing", "trajectory", "grounding", "affordance"]
+        valid_tasks = ["general", "pointing", "trajectory", "grounding", "affordance", "planning"]
         assert task in valid_tasks, (
             f"Invalid task: {task!r}. Supported: {valid_tasks}"
         )
