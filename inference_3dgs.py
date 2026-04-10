@@ -99,7 +99,20 @@ _TASK_PROMPTS = {
         'target object, affordance point [u, v], approach direction [x, y, z], '
         'and constraints organized by category (contact, spatial, pose, direction, '
         'safety) with role labels (completion, safety, progress). '
-        'Include a done_when completion condition for each step.'
+        'Include a done_when completion condition for each step.\n\n'
+        'Example output format:\n'
+        'Scene: red_block, blue_plate, table\n'
+        'Step 1: reach(red_block)\n'
+        '  affordance: [0.35, 0.48], approach: [0.00, 0.00, -1.00]\n'
+        '  contact: gripper_state(open) [progress]\n'
+        '  spatial: distance(gripper, red_block, <, 0.03) [completion]\n'
+        '  done_when: distance(gripper, red_block) < 0.03\n'
+        'Step 2: grasp(red_block)\n'
+        '  affordance: [0.35, 0.48], approach: [0.00, 0.00, -1.00]\n'
+        '  contact: holding(red_block) [completion]\n'
+        '  done_when: holding(red_block)\n\n'
+        'Now analyze the scene image and output the plan in EXACTLY this compact format. '
+        'Do NOT use markdown headers, bullet points, or bold text.'
     ),
     "general": "{text}",
 }

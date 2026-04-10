@@ -32,9 +32,75 @@ sys.path.insert(0, str(Path(__file__).parent))
 from utils.prompt_utils import parse_planning_output, parse_affordance_output
 
 
+def _parse_markdown_plan(text: str) -> dict:
+    """Fallback parser for Markdown-formatted plan output.
+
+    Handles output like:
+        #### Step 1: Reach
+        * **Operation Primitive:** reach
+        * **Target Object:** yellow lid
+        * **Affordance Point:** [u=840, v=750]
+        * **Done_when:** ...
+    """
+    import re
+    result = {"scene_objects": [], "steps": []}
+
+    # Extract steps from markdown headers
+    step_blocks = re.split(r'#{2,4}\s*Step\s+(\d+)', text)
+    for i in range(1, len(step_blocks), 2):
+        step_num = int(step_blocks[i])
+        block = step_blocks[i + 1] if i + 1 < len(step_blocks) else ""
+
+        step = {"step": step_num}
+
+        # Extract operation primitive / action
+        m = re.search(r'\*?\*?Operation Primitive:?\*?\*?\s*(\w+)', block, re.I)
+        if m:
+            step["action"] = m.group(1).lower()
+
+        # Extract target (stop at first * or newline)
+        m = re.search(r'\*?\*?Target Object:?\*?\*?\s*([^*\n]+)', block, re.I)
+        if m:
+            step["target"] = m.group(1).strip().rstrip('.')
+
+        # Extract affordance - handle [u=840, v=750] or [0.84, 0.75]
+        m = re.search(r'Affordance.*?\[(?:u\s*=\s*)?([0-9.]+)[,\s]+(?:v\s*=\s*)?([0-9.]+)\]', block, re.I)
+        if m:
+            u, v = float(m.group(1)), float(m.group(2))
+            # Normalize if pixel coords (>1.0)
+            if u > 1.0:
+                u /= 1000.0
+            if v > 1.0:
+                v /= 1000.0
+            step["affordance"] = [round(u, 2), round(v, 2)]
+
+        # Extract approach
+        m = re.search(r'Approach.*?\[(?:x\s*=\s*)?([0-9.-]+)[,\s]+(?:y\s*=\s*)?([0-9.-]+)[,\s]+(?:z\s*=\s*)?([0-9.-]+)\]', block, re.I)
+        if m:
+            step["approach"] = [float(m.group(1)), float(m.group(2)), float(m.group(3))]
+
+        # Extract done_when
+        m = re.search(r'Done.?when:?\*?\*?\s*(.+?)(?:\n|$)', block, re.I)
+        if m:
+            step["done_when"] = m.group(1).strip().strip('*').strip()
+
+        if "action" in step:
+            result["steps"].append(step)
+
+    return result
+
+
 def format_plan_as_json(raw_text: str, task: str) -> dict:
-    """Parse raw model output into structured plan JSON."""
+    """Parse raw model output into structured plan JSON.
+
+    Tries compact format first (Step N: action(target)), falls back to
+    Markdown parser if compact parse returns empty steps.
+    """
     parsed = parse_planning_output(raw_text)
+
+    # Fallback: if compact parser found no steps, try Markdown parser
+    if not parsed.get("steps"):
+        parsed = _parse_markdown_plan(raw_text)
 
     plan = {
         "task": task,
