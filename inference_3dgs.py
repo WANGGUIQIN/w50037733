@@ -362,14 +362,6 @@ class UnifiedInference3DGS:
         print(f"Depth: {depth or 'None (2D-only)'}")
         print(f"{'='*47}\n")
 
-        # Tokenize with chat template
-        _, input_ids = format_inference_prompt(
-            prompt_text, self.tokenizer, self.system_prompt,
-            task_type="general",  # already formatted above
-        )
-        input_ids = input_ids.to(self.device)
-        attention_mask = torch.ones_like(input_ids)
-
         # Prepare 3D branch inputs (RGBD)
         rgb, depth_tensor, K = None, None, None
         if len(image) >= 1:
@@ -381,11 +373,34 @@ class UnifiedInference3DGS:
             if depth_tensor is not None:
                 depth_tensor = depth_tensor.to(device=self.device, dtype=self.dtype)
 
-        # Generate
+        # Tokenize with chat template + image (enables ViT)
+        pil_img = Image.open(image[0]).convert("RGB")
+        messages = []
+        if self.system_prompt:
+            messages.append({"role": "system", "content": self.system_prompt})
+        messages.append({"role": "user", "content": [
+            {"type": "image", "image": pil_img},
+            {"type": "text", "text": prompt_text},
+        ]})
+        text_for_proc = self.processor.apply_chat_template(
+            messages, tokenize=False, add_generation_prompt=True,
+        )
+        proc_inputs = self.processor(
+            text=[text_for_proc], images=[pil_img],
+            return_tensors="pt", padding=True,
+        )
+        input_ids = proc_inputs["input_ids"].to(self.device)
+        attention_mask = proc_inputs["attention_mask"].to(self.device)
+        pixel_values = proc_inputs["pixel_values"].to(device=self.device, dtype=self.dtype)
+        image_grid_thw = proc_inputs["image_grid_thw"].to(self.device)
+
+        # Generate with ViT (2D) + 3D branch
         print("Running inference ...")
         generated = self.model.generate_with_3d(
             input_ids=input_ids,
             attention_mask=attention_mask,
+            pixel_values=pixel_values,
+            image_grid_thw=image_grid_thw,
             depth=depth_tensor,
             intrinsics=K,
             rgb_for_3d=rgb if depth_tensor is not None else None,

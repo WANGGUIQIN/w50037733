@@ -282,18 +282,21 @@ class RoboBrain3DGS_VLM(nn.Module):
         # Step 2: Run ViT if pixel_values provided (native 2D path)
         vit_tokens = None
         if pixel_values is not None and image_grid_thw is not None:
-            visual_outputs = self._get_visual()(
-                pixel_values, grid_thw=image_grid_thw,
+            visual_out = self._get_visual()(
+                pixel_values, grid_thw=image_grid_thw, return_dict=True,
             )
+            # pooler_output is the spatially-merged visual features
+            visual_embeds = visual_out.pooler_output  # [total_patches, hidden_dim]
+
             # Inject 2D tokens at <image_pad> positions (standard VLM path)
             image_token_id = self.vlm.config.image_token_id
             image_mask = input_ids == image_token_id
             if image_mask.any():
-                inputs_embeds[image_mask] = visual_outputs.to(inputs_embeds.dtype)
+                inputs_embeds[image_mask] = visual_embeds.to(inputs_embeds.dtype)
 
             # Keep per-sample 2D tokens for fusion
-            N_2d = visual_outputs.shape[0] // B
-            vit_tokens = visual_outputs.reshape(B, N_2d, -1).detach()
+            N_2d = visual_embeds.shape[0] // B
+            vit_tokens = visual_embeds.reshape(B, N_2d, -1).detach()
 
         # Step 3: Encode 3D Gaussian tokens with optional fusion
         gaussians = None
@@ -373,16 +376,17 @@ class RoboBrain3DGS_VLM(nn.Module):
         # Visual encoding (2D ViT path)
         vit_tokens = None
         if pixel_values is not None and image_grid_thw is not None:
-            visual_outputs = self._get_visual()(
-                pixel_values, grid_thw=image_grid_thw,
+            visual_out = self._get_visual()(
+                pixel_values, grid_thw=image_grid_thw, return_dict=True,
             )
+            visual_embeds = visual_out.pooler_output
             image_token_id = self.vlm.config.image_token_id
             image_mask = input_ids == image_token_id
             if image_mask.any():
-                inputs_embeds[image_mask] = visual_outputs.to(inputs_embeds.dtype)
+                inputs_embeds[image_mask] = visual_embeds.to(inputs_embeds.dtype)
             # Keep 2D tokens for cross-modal fusion
-            N_2d = visual_outputs.shape[0] // B
-            vit_tokens = visual_outputs.reshape(B, N_2d, -1).detach()
+            N_2d = visual_embeds.shape[0] // B
+            vit_tokens = visual_embeds.reshape(B, N_2d, -1).detach()
 
         # 3D token injection (with optional cross-modal fusion)
         if depth is not None and intrinsics is not None and rgb_for_3d is not None:

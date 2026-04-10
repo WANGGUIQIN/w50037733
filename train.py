@@ -47,6 +47,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch.utils.data import DataLoader, ConcatDataset
 import yaml
+from PIL import Image
 
 sys.path.insert(0, str(Path(__file__).parent))
 
@@ -407,8 +408,15 @@ def train_step(
     device: str,
     system_prompt: str | None = DEFAULT_SYSTEM_PROMPT,
     max_seq_length: int = 512,
+    processor=None,
 ) -> dict[str, torch.Tensor]:
-    """One forward + loss computation. Does NOT call backward."""
+    """One forward + loss computation. Does NOT call backward.
+
+    When ``processor`` is provided (AutoProcessor from Qwen3-VL), images are
+    processed through the ViT pipeline so the LLM receives both 2D visual
+    tokens (from frozen ViT) AND 3D Gaussian tokens (from the 3D branch).
+    Without ``processor``, falls back to text-only + 3D (no ViT).
+    """
     inner = model.module if hasattr(model, "module") else model
     dtype = next(inner.parameters()).dtype
 
@@ -419,18 +427,91 @@ def train_step(
     targets    = batch["targets"]
     task_types = batch.get("task_types")
 
-    # Tokenise with Qwen3-VL chat template: LM loss only on assistant tokens
-    input_ids, attention_mask, labels = build_chat_inputs(
-        prompts, targets, tokenizer, device,
-        max_length=max_seq_length,
-        system_prompt=system_prompt,
-        task_types=task_types,
-    )
+    # ---- Dual-path tokenization: text + image (ViT) ----
+    pixel_values = None
+    image_grid_thw = None
 
-    # Forward
+    if processor is not None:
+        # Build chat messages with images for Qwen3-VL processor
+        # This produces input_ids WITH <image_pad> tokens + pixel_values
+        from utils.prompt_utils import augment_prompt, PLANNING_SYSTEM_PROMPT
+        B = rgb.shape[0]
+        all_texts = []
+        pil_images = []
+
+        for i in range(B):
+            task_type = task_types[i] if task_types else "affordance"
+            user_text = augment_prompt(prompts[i], task_type)
+            sys_prompt = PLANNING_SYSTEM_PROMPT if task_type == "planning" else system_prompt
+
+            messages = []
+            if sys_prompt:
+                messages.append({"role": "system", "content": sys_prompt})
+            messages.append({"role": "user", "content": [
+                {"type": "image", "image": "placeholder"},  # placeholder for template
+                {"type": "text", "text": user_text},
+            ]})
+            messages.append({"role": "assistant", "content": targets[i]})
+
+            text = processor.apply_chat_template(messages, tokenize=False, add_generation_prompt=False)
+            all_texts.append(text)
+
+            # Convert RGB tensor [3, H, W] -> PIL Image for processor
+            rgb_np = (rgb[i].float().cpu().clamp(0, 1) * 255).byte().permute(1, 2, 0).numpy()
+            pil_images.append(Image.fromarray(rgb_np))
+
+        # Processor handles image preprocessing + tokenization together
+        proc_inputs = processor(
+            text=all_texts, images=pil_images,
+            return_tensors="pt", padding=True, truncation=True,
+            max_length=max_seq_length,
+        )
+        input_ids = proc_inputs["input_ids"].to(device)
+        attention_mask = proc_inputs["attention_mask"].to(device)
+        pixel_values = proc_inputs["pixel_values"].to(device=device, dtype=dtype)
+        image_grid_thw = proc_inputs["image_grid_thw"].to(device)
+
+        # Build labels: tokenize prompt-only (with image) to get correct prompt length
+        # including expanded <image_pad> tokens, then mask those positions
+        labels = input_ids.clone()
+        for i in range(B):
+            task_type = task_types[i] if task_types else "affordance"
+            user_text = augment_prompt(prompts[i], task_type)
+            sys_prompt_i = PLANNING_SYSTEM_PROMPT if task_type == "planning" else system_prompt
+
+            prompt_messages = []
+            if sys_prompt_i:
+                prompt_messages.append({"role": "system", "content": sys_prompt_i})
+            prompt_messages.append({"role": "user", "content": [
+                {"type": "image", "image": "placeholder"},
+                {"type": "text", "text": user_text},
+            ]})
+            prompt_text = processor.apply_chat_template(
+                prompt_messages, tokenize=False, add_generation_prompt=True,
+            )
+            prompt_inputs = processor(
+                text=[prompt_text], images=[pil_images[i]],
+                return_tensors="pt", truncation=True, max_length=max_seq_length,
+            )
+            plen = prompt_inputs["input_ids"].shape[1]
+            labels[i, :plen] = -100
+        labels[attention_mask == 0] = -100
+
+    else:
+        # Fallback: text-only tokenization (no ViT, same as before)
+        input_ids, attention_mask, labels = build_chat_inputs(
+            prompts, targets, tokenizer, device,
+            max_length=max_seq_length,
+            system_prompt=system_prompt,
+            task_types=task_types,
+        )
+
+    # Forward (pixel_values enables ViT; depth enables 3D branch)
     outputs = inner(
         input_ids=input_ids,
         attention_mask=attention_mask,
+        pixel_values=pixel_values,
+        image_grid_thw=image_grid_thw,
         depth=depth,
         intrinsics=intrinsics,
         rgb_for_3d=rgb,
@@ -917,6 +998,7 @@ def train(cfg: dict, args):
                 render_loss_fn, render_weight, str(device),
                 system_prompt=system_prompt,
                 max_seq_length=max_seq_length,
+                processor=processor,
             )
             loss = metrics["loss"]
 
