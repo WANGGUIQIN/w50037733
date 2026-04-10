@@ -362,7 +362,12 @@ class UnifiedInference3DGS:
             "Pointing, grounding, trajectory, and affordance tasks require exactly one image."
         )
 
-        # Apply task-specific prompt
+        # Apply task-specific prompt; switch system prompt for planning
+        if task == "planning":
+            from utils.prompt_utils import PLANNING_SYSTEM_PROMPT
+            active_system_prompt = PLANNING_SYSTEM_PROMPT
+        else:
+            active_system_prompt = self.system_prompt
         prompt_text = self._format_prompt(text, task)
         print(f"\n{'='*20} INPUT {'='*20}")
         print(f"Task: {task}")
@@ -385,8 +390,8 @@ class UnifiedInference3DGS:
         # Tokenize with chat template + image (enables ViT)
         pil_img = Image.open(image[0]).convert("RGB")
         messages = []
-        if self.system_prompt:
-            messages.append({"role": "system", "content": self.system_prompt})
+        if active_system_prompt:
+            messages.append({"role": "system", "content": active_system_prompt})
         messages.append({"role": "user", "content": [
             {"type": "image", "image": pil_img},
             {"type": "text", "text": prompt_text},
