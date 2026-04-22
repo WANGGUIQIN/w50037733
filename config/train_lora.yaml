@@ -74,7 +74,7 @@ rendering_loss:
   lambda_depth: 0.5
   lambda_opacity: 0.01
   lambda_uncertainty: 0.1      # VarSplat geometry variance loss
-  weight: 0.1
+  weight: 0.3                  # ↑ bumped 0.1→0.3 for cold-start: forces 3D branch to learn geometry
 
 # === Checkpoint ===
 checkpoint:

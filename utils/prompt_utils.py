@@ -100,11 +100,14 @@ TASK_TEMPLATES = {
 # ---------------------------------------------------------------------------
 
 _AFF_RE = re.compile(
-    r"affordance[:\s]*\[([0-9.]+)[,\s]+([0-9.]+)\]", re.I,
+    # Match both "[0.5, 0.5]" and "[u=0.5, v=0.5]"
+    r"affordance[:\s]*\[\s*(?:u=)?([0-9.]+)[,\s]+(?:v=)?([0-9.]+)\s*\]", re.I,
 )
 _WID_RE = re.compile(r"gripper_width\s*=\s*([0-9.]+)", re.I)
 _APP_RE = re.compile(
-    r"approach\s*=\s*\[([-0-9.e+]+)[,\s]+([-0-9.e+]+)[,\s]+([-0-9.e+]+)\]",
+    # Match both "[0, 0, -1]" and "[x=0, y=0, z=-1]"
+    r"approach[=:\s]*\[\s*(?:x=)?([-0-9.e+]+)[,\s]+"
+    r"(?:y=)?([-0-9.e+]+)[,\s]+(?:z=)?([-0-9.e+]+)\s*\]",
     re.I,
 )
 
@@ -219,9 +222,11 @@ def parse_planning_output(text: str) -> dict:
         if m:
             step["affordance"] = [float(m.group(1)), float(m.group(2))]
 
-        # Parse approach (handle both "approach: [...]" and "approach=[...]")
+        # Parse approach (handle "approach: [...]", "approach=[...]",
+        # and "approach: [x=..., y=..., z=...]")
         app_m = re.search(
-            r"approach[=:\s]+\[([-0-9.e+]+)[,\s]+([-0-9.e+]+)[,\s]+([-0-9.e+]+)\]",
+            r"approach[=:\s]+\[\s*(?:x=)?([-0-9.e+]+)[,\s]+"
+            r"(?:y=)?([-0-9.e+]+)[,\s]+(?:z=)?([-0-9.e+]+)\s*\]",
             part, re.I,
         )
         if app_m:

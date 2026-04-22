@@ -1,0 +1,343 @@
+{
+  "split": "test_ood_embo",
+  "created_at": "2026-04-21T03:48:12",
+  "total": 83,
+  "by_dataset": {
+    "utokyo_xarm_bimanual_converted_externally_to_rlds": 63,
+    "aloha": 20
+  },
+  "episodes": [
+    {
+      "dataset": "utokyo_xarm_bimanual_converted_externally_to_rlds",
+      "episode_id": "episode_000000"
+    },
+    {
+      "dataset": "utokyo_xarm_bimanual_converted_externally_to_rlds",
+      "episode_id": "episode_000001"
+    },
+    {
+      "dataset": "utokyo_xarm_bimanual_converted_externally_to_rlds",
+      "episode_id": "episode_000002"
+    },
+    {
+      "dataset": "utokyo_xarm_bimanual_converted_externally_to_rlds",
+      "episode_id": "episode_000003"
+    },
+    {
+      "dataset": "utokyo_xarm_bimanual_converted_externally_to_rlds",
+      "episode_id": "episode_000004"
+    },
+    {
+      "dataset": "utokyo_xarm_bimanual_converted_externally_to_rlds",
+      "episode_id": "episode_000005"
+    },
+    {
+      "dataset": "utokyo_xarm_bimanual_converted_externally_to_rlds",
+      "episode_id": "episode_000006"
+    },
+    {
+      "dataset": "utokyo_xarm_bimanual_converted_externally_to_rlds",
+      "episode_id": "episode_000007"
+    },
+    {
+      "dataset": "utokyo_xarm_bimanual_converted_externally_to_rlds",
+      "episode_id": "episode_000008"
+    },
+    {
+      "dataset": "utokyo_xarm_bimanual_converted_externally_to_rlds",
+      "episode_id": "episode_000009"
+    },
+    {
+      "dataset": "utokyo_xarm_bimanual_converted_externally_to_rlds",
+      "episode_id": "episode_000010"
+    },
+    {
+      "dataset": "utokyo_xarm_bimanual_converted_externally_to_rlds",
+      "episode_id": "episode_000011"
+    },
+    {
+      "dataset": "utokyo_xarm_bimanual_converted_externally_to_rlds",
+      "episode_id": "episode_000012"
+    },
+    {
+      "dataset": "utokyo_xarm_bimanual_converted_externally_to_rlds",
+      "episode_id": "episode_000013"
+    },
+    {
+      "dataset": "utokyo_xarm_bimanual_converted_externally_to_rlds",
+      "episode_id": "episode_000014"
+    },
+    {
+      "dataset": "utokyo_xarm_bimanual_converted_externally_to_rlds",
+      "episode_id": "episode_000015"
+    },
+    {
+      "dataset": "utokyo_xarm_bimanual_converted_externally_to_rlds",
+      "episode_id": "episode_000016"
+    },
+    {
+      "dataset": "utokyo_xarm_bimanual_converted_externally_to_rlds",
+      "episode_id": "episode_000017"
+    },
+    {
+      "dataset": "utokyo_xarm_bimanual_converted_externally_to_rlds",
+      "episode_id": "episode_000018"
+    },
+    {
+      "dataset": "utokyo_xarm_bimanual_converted_externally_to_rlds",
+      "episode_id": "episode_000019"
+    },
+    {
+      "dataset": "utokyo_xarm_bimanual_converted_externally_to_rlds",
+      "episode_id": "episode_000020"
+    },
+    {
+      "dataset": "utokyo_xarm_bimanual_converted_externally_to_rlds",
+      "episode_id": "episode_000021"
+    },
+    {
+      "dataset": "utokyo_xarm_bimanual_converted_externally_to_rlds",
+      "episode_id": "episode_000022"
+    },
+    {
+      "dataset": "utokyo_xarm_bimanual_converted_externally_to_rlds",
+      "episode_id": "episode_000023"
+    },
+    {
+      "dataset": "utokyo_xarm_bimanual_converted_externally_to_rlds",
+      "episode_id": "episode_000024"
+    },
+    {
+      "dataset": "utokyo_xarm_bimanual_converted_externally_to_rlds",
+      "episode_id": "episode_000025"
+    },
+    {
+      "dataset": "utokyo_xarm_bimanual_converted_externally_to_rlds",
+      "episode_id": "episode_000026"
+    },
+    {
+      "dataset": "utokyo_xarm_bimanual_converted_externally_to_rlds",
+      "episode_id": "episode_000027"
+    },
+    {
+      "dataset": "utokyo_xarm_bimanual_converted_externally_to_rlds",
+      "episode_id": "episode_000028"
+    },
+    {
+      "dataset": "utokyo_xarm_bimanual_converted_externally_to_rlds",
+      "episode_id": "episode_000029"
+    },
+    {
+      "dataset": "utokyo_xarm_bimanual_converted_externally_to_rlds",
+      "episode_id": "episode_000030"
+    },
+    {
+      "dataset": "utokyo_xarm_bimanual_converted_externally_to_rlds",
+      "episode_id": "episode_000031"
+    },
+    {
+      "dataset": "utokyo_xarm_bimanual_converted_externally_to_rlds",
+      "episode_id": "episode_000032"
+    },
+    {
+      "dataset": "utokyo_xarm_bimanual_converted_externally_to_rlds",
+      "episode_id": "episode_000033"
+    },
+    {
+      "dataset": "utokyo_xarm_bimanual_converted_externally_to_rlds",
+      "episode_id": "episode_000034"
+    },
+    {
+      "dataset": "utokyo_xarm_bimanual_converted_externally_to_rlds",
+      "episode_id": "episode_000035"
+    },
+    {
+      "dataset": "utokyo_xarm_bimanual_converted_externally_to_rlds",
+      "episode_id": "episode_000036"
+    },
+    {
+      "dataset": "utokyo_xarm_bimanual_converted_externally_to_rlds",
+      "episode_id": "episode_000037"
+    },
+    {
+      "dataset": "utokyo_xarm_bimanual_converted_externally_to_rlds",
+      "episode_id": "episode_000038"
+    },
+    {
+      "dataset": "utokyo_xarm_bimanual_converted_externally_to_rlds",
+      "episode_id": "episode_000039"
+    },
+    {
+      "dataset": "utokyo_xarm_bimanual_converted_externally_to_rlds",
+      "episode_id": "episode_000040"
+    },
+    {
+      "dataset": "utokyo_xarm_bimanual_converted_externally_to_rlds",
+      "episode_id": "episode_000041"
+    },
+    {
+      "dataset": "utokyo_xarm_bimanual_converted_externally_to_rlds",
+      "episode_id": "episode_000042"
+    },
+    {
+      "dataset": "utokyo_xarm_bimanual_converted_externally_to_rlds",
+      "episode_id": "episode_000043"
+    },
+    {
+      "dataset": "utokyo_xarm_bimanual_converted_externally_to_rlds",
+      "episode_id": "episode_000044"
+    },
+    {
+      "dataset": "utokyo_xarm_bimanual_converted_externally_to_rlds",
+      "episode_id": "episode_000045"
+    },
+    {
+      "dataset": "utokyo_xarm_bimanual_converted_externally_to_rlds",
+      "episode_id": "episode_000046"
+    },
+    {
+      "dataset": "utokyo_xarm_bimanual_converted_externally_to_rlds",
+      "episode_id": "episode_000047"
+    },
+    {
+      "dataset": "utokyo_xarm_bimanual_converted_externally_to_rlds",
+      "episode_id": "episode_000048"
+    },
+    {
+      "dataset": "utokyo_xarm_bimanual_converted_externally_to_rlds",
+      "episode_id": "episode_000049"
+    },
+    {
+      "dataset": "utokyo_xarm_bimanual_converted_externally_to_rlds",
+      "episode_id": "episode_000050"
+    },
+    {
+      "dataset": "utokyo_xarm_bimanual_converted_externally_to_rlds",
+      "episode_id": "episode_000051"
+    },
+    {
+      "dataset": "utokyo_xarm_bimanual_converted_externally_to_rlds",
+      "episode_id": "episode_000052"
+    },
+    {
+      "dataset": "utokyo_xarm_bimanual_converted_externally_to_rlds",
+      "episode_id": "episode_000053"
+    },
+    {
+      "dataset": "utokyo_xarm_bimanual_converted_externally_to_rlds",
+      "episode_id": "episode_000054"
+    },
+    {
+      "dataset": "utokyo_xarm_bimanual_converted_externally_to_rlds",
+      "episode_id": "episode_000056"
+    },
+    {
+      "dataset": "utokyo_xarm_bimanual_converted_externally_to_rlds",
+      "episode_id": "episode_000057"
+    },
+    {
+      "dataset": "utokyo_xarm_bimanual_converted_externally_to_rlds",
+      "episode_id": "episode_000058"
+    },
+    {
+      "dataset": "utokyo_xarm_bimanual_converted_externally_to_rlds",
+      "episode_id": "episode_000059"
+    },
+    {
+      "dataset": "utokyo_xarm_bimanual_converted_externally_to_rlds",
+      "episode_id": "episode_000060"
+    },
+    {
+      "dataset": "utokyo_xarm_bimanual_converted_externally_to_rlds",
+      "episode_id": "episode_000061"
+    },
+    {
+      "dataset": "utokyo_xarm_bimanual_converted_externally_to_rlds",
+      "episode_id": "episode_000062"
+    },
+    {
+      "dataset": "utokyo_xarm_bimanual_converted_externally_to_rlds",
+      "episode_id": "episode_000063"
+    },
+    {
+      "dataset": "aloha",
+      "episode_id": "episode_000000"
+    },
+    {
+      "dataset": "aloha",
+      "episode_id": "episode_000001"
+    },
+    {
+      "dataset": "aloha",
+      "episode_id": "episode_000002"
+    },
+    {
+      "dataset": "aloha",
+      "episode_id": "episode_000003"
+    },
+    {
+      "dataset": "aloha",
+      "episode_id": "episode_000004"
+    },
+    {
+      "dataset": "aloha",
+      "episode_id": "episode_000005"
+    },
+    {
+      "dataset": "aloha",
+      "episode_id": "episode_000006"
+    },
+    {
+      "dataset": "aloha",
+      "episode_id": "episode_000007"
+    },
+    {
+      "dataset": "aloha",
+      "episode_id": "episode_000008"
+    },
+    {
+      "dataset": "aloha",
+      "episode_id": "episode_000009"
+    },
+    {
+      "dataset": "aloha",
+      "episode_id": "episode_000010"
+    },
+    {
+      "dataset": "aloha",
+      "episode_id": "episode_000011"
+    },
+    {
+      "dataset": "aloha",
+      "episode_id": "episode_000012"
+    },
+    {
+      "dataset": "aloha",
+      "episode_id": "episode_000013"
+    },
+    {
+      "dataset": "aloha",
+      "episode_id": "episode_000014"
+    },
+    {
+      "dataset": "aloha",
+      "episode_id": "episode_000015"
+    },
+    {
+      "dataset": "aloha",
+      "episode_id": "episode_000016"
+    },
+    {
+      "dataset": "aloha",
+      "episode_id": "episode_000017"
+    },
+    {
+      "dataset": "aloha",
+      "episode_id": "episode_000018"
+    },
+    {
+      "dataset": "aloha",
+      "episode_id": "episode_000019"
+    }
+  ]
+}

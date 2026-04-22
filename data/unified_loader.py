@@ -177,9 +177,11 @@ class UnifiedDataset(Dataset):
                 header = f"Step {step_num}: {action}({target_obj})"
 
             lines.append(header)
+            # .3f precision so models learn 1000-bin resolution instead of 100;
+            # u=/v= prefixes give explicit field-name context for the decoder.
             lines.append(
-                f"  affordance: [{aff[0]:.2f}, {aff[1]:.2f}], "
-                f"approach: [{approach[0]:.2f}, {approach[1]:.2f}, {approach[2]:.2f}]"
+                f"  affordance: [u={aff[0]:.3f}, v={aff[1]:.3f}], "
+                f"approach: [x={approach[0]:.3f}, y={approach[1]:.3f}, z={approach[2]:.3f}]"
             )
 
             # Constraint categories (new format)
@@ -208,4 +210,8 @@ class UnifiedDataset(Dataset):
             if done:
                 lines.append(f"  done_when: {done}")
 
+        # End-of-plan signal: lets the model learn when to stop generating.
+        # Without this, greedy/sampled decoding often loops through extra
+        # synthetic steps (observed in first-version student model output).
+        lines.append("<END_OF_PLAN>")
         return "\n".join(lines)

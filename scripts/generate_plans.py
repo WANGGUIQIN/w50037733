@@ -37,10 +37,12 @@ from openai import OpenAI
 # Config
 # ---------------------------------------------------------------------------
 
-API_KEY = os.environ.get(
-    "OPENAI_API_KEY",
-    "sk-RcVDkxbG6OBXrK1FlLC6fDdXsFz1LBTeSXnRLSjeSuL91MW5",
-)
+API_KEY = os.environ.get("OPENAI_API_KEY")
+if not API_KEY:
+    raise RuntimeError(
+        "OPENAI_API_KEY environment variable is not set. "
+        "Export it before running this script: export OPENAI_API_KEY=sk-..."
+    )
 BASE_URL = os.environ.get("OPENAI_BASE_URL", "https://yunwu.ai/v1")
 MODEL = os.environ.get("PLAN_MODEL", "gpt-4o-mini")
 DATA_ROOT = Path(__file__).parent.parent / "data" / "processed"
@@ -311,37 +313,51 @@ def process_episode(client: OpenAI, ep_dir: Path) -> tuple[str, bool]:
 # ---------------------------------------------------------------------------
 
 def main():
+    global MODEL
     parser = argparse.ArgumentParser(description="Batch generate plan.json via GPT API")
-    parser.add_argument("--dataset", default="rlbench", help="Dataset name under data/processed/")
-    parser.add_argument("--start", type=int, default=0, help="Start episode index")
-    parser.add_argument("--end", type=int, default=-1, help="End episode index (-1 = all)")
+    parser.add_argument("--dataset", default="rlbench", help="Dataset name under data/processed/ (single-dataset mode)")
+    parser.add_argument("--splits", default=None,
+                        help="Path to splits JSON (e.g. data/splits/train.json). "
+                             "When set, overrides --dataset/--start/--end.")
+    parser.add_argument("--start", type=int, default=0, help="Start episode index (single-dataset mode)")
+    parser.add_argument("--end", type=int, default=-1, help="End episode index (single-dataset mode, -1 = all)")
     parser.add_argument("--resume", action="store_true", help="Skip episodes with existing plan.json")
     parser.add_argument("--workers", type=int, default=4, help="Concurrent API workers")
     parser.add_argument("--model", type=str, default=None, help="Override model name")
     args = parser.parse_args()
 
-    global MODEL
     if args.model:
         MODEL = args.model
 
-    ds_dir = DATA_ROOT / args.dataset
-    if not ds_dir.exists():
-        print(f"ERROR: {ds_dir} not found")
-        sys.exit(1)
-
     # Collect episodes
-    episodes = sorted([d for d in ds_dir.iterdir() if d.is_dir() and d.name.startswith("episode_")])
-
-    if args.end > 0:
-        episodes = episodes[args.start:args.end]
+    if args.splits:
+        split_path = Path(args.splits)
+        if not split_path.exists():
+            print(f"ERROR: splits file not found: {split_path}")
+            sys.exit(1)
+        with open(split_path) as f:
+            split_data = json.load(f)
+        episodes = [DATA_ROOT / e["dataset"] / e["episode_id"] for e in split_data["episodes"]]
+        # Drop non-existent episode directories (robustness)
+        episodes = [ep for ep in episodes if ep.exists()]
+        source_desc = f"splits={split_path.name} ({split_data.get('total', len(episodes))} ep)"
     else:
-        episodes = episodes[args.start:]
+        ds_dir = DATA_ROOT / args.dataset
+        if not ds_dir.exists():
+            print(f"ERROR: {ds_dir} not found")
+            sys.exit(1)
+        episodes = sorted([d for d in ds_dir.iterdir() if d.is_dir() and d.name.startswith("episode_")])
+        if args.end > 0:
+            episodes = episodes[args.start:args.end]
+        else:
+            episodes = episodes[args.start:]
+        source_desc = f"dataset={args.dataset} (start={args.start}, end={args.end})"
 
     if args.resume:
         episodes = [ep for ep in episodes if not (ep / "plan.json").exists()]
 
-    print(f"Dataset: {args.dataset}")
-    print(f"Episodes: {len(episodes)} (start={args.start}, end={args.end})")
+    print(f"Source: {source_desc}")
+    print(f"Episodes: {len(episodes)}")
     print(f"Model: {MODEL}")
     print(f"Workers: {args.workers}")
     print(f"Resume: {args.resume}")
