@@ -27,3 +27,7 @@ outputs/
 output_rlbench_planning/*/rgb_*.png
 output_bridge_planning/*/rgb_*.png
 result/
+
+# Data archives (uploaded via rclone/gdrive, not git)
+*.tar.zst
+*.tar.gz

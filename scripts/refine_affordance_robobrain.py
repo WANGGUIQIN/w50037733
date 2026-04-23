@@ -105,9 +105,10 @@ def resolve_query(step: dict) -> str:
     """Pick the object to localize: destination for placing-type actions, target otherwise."""
     action = step.get("action", "")
     dest = step.get("destination")
-    if action in DESTINATION_ACTIONS and dest:
-        return dest
-    return step.get("target", "")
+    raw = dest if (action in DESTINATION_ACTIONS and dest) else step.get("target", "")
+    if isinstance(raw, list):
+        raw = " and ".join(str(x) for x in raw)
+    return raw or ""
 
 
 def refine_plan(

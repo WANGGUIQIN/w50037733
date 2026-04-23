@@ -170,6 +170,17 @@ class UnifiedDataset(Dataset):
             approach = step.get("approach", [0.0, 0.0, -1.0])
             done = step.get("done_when", "")
 
+            # Coerce malformed numeric fields to defaults — GPT sometimes
+            # emits placeholder strings (e.g. "dynamic", "similar to above")
+            # instead of lists of floats, which would crash the f-string
+            # formatting with "unknown format code 'f' for object of type str".
+            if not (isinstance(aff, list) and len(aff) >= 2 and
+                    all(isinstance(v, (int, float)) for v in aff[:2])):
+                aff = [0.5, 0.5]
+            if not (isinstance(approach, list) and len(approach) >= 3 and
+                    all(isinstance(v, (int, float)) for v in approach[:3])):
+                approach = [0.0, 0.0, -1.0]
+
             # Step header: "action(target)" or "action(target -> dest)"
             if dest:
                 header = f"Step {step_num}: {action}({target_obj} -> {dest})"
@@ -184,8 +195,14 @@ class UnifiedDataset(Dataset):
                 f"approach: [x={approach[0]:.3f}, y={approach[1]:.3f}, z={approach[2]:.3f}]"
             )
 
-            # Constraint categories (new format)
+            # Constraint categories (new format).
+            # GPT sometimes hallucinates a placeholder string instead of the
+            # structured dict — coerce anything non-dict into empty dict so
+            # the loader falls back to legacy-gripper rendering instead of
+            # crashing with AttributeError on .get().
             constraints = step.get("constraints", {})
+            if not isinstance(constraints, dict):
+                constraints = {}
             if constraints:
                 for cat in ("contact", "spatial", "pose", "direction", "safety"):
                     cat_constraints = constraints.get(cat, [])
