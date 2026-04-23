@@ -94,13 +94,28 @@ def load_split_episodes(split_name: str) -> list[Path]:
     return paths
 
 
+def scan_filesystem() -> list[Path]:
+    """Fallback when split files aren't available (e.g. on a training server
+    that only has data/processed/ extracted from a tarball)."""
+    if not DATA_ROOT.exists():
+        return []
+    return sorted(DATA_ROOT.glob("*/episode_*/plan.json"))
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     parser.add_argument(
         "--splits",
         nargs="+",
         default=["train", "val", "test_id", "test_ood_embo", "test_ood_task"],
-        help="Which splits to process (default: all five).",
+        help="Which splits to process (default: all five). Ignored if --all is set "
+             "or if no split files exist on disk.",
+    )
+    parser.add_argument(
+        "--all",
+        action="store_true",
+        help="Ignore split files and walk data/processed/ directly "
+             "(use on training servers where split JSONs weren't transferred).",
     )
     parser.add_argument(
         "--dry-run",
@@ -109,13 +124,23 @@ def main() -> int:
     )
     args = parser.parse_args()
 
+    # Decide which mode to run: split-whitelisted or filesystem-walk.
+    # Auto-fallback if the user passed --splits but no split files exist.
+    use_filesystem = args.all or not SPLITS_DIR.exists() or not any(SPLITS_DIR.glob("*.json"))
+    if use_filesystem and not args.all:
+        print(f"[info] {SPLITS_DIR} is empty or missing — falling back to filesystem scan")
+
     total_scanned = 0
     total_dirty = 0
     fix_counter: Counter = Counter()
     per_split: dict[str, dict] = {}
 
-    for split in args.splits:
-        paths = load_split_episodes(split)
+    if use_filesystem:
+        groups = {"all": scan_filesystem()}
+    else:
+        groups = {name: load_split_episodes(name) for name in args.splits}
+
+    for split, paths in groups.items():
         if not paths:
             print(f"[{split}] no episodes on disk (or split file missing), skipping")
             continue
