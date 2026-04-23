@@ -9,21 +9,26 @@ on a small number of episodes. Known hallucination patterns:
     "approach":    "dynamic"                      # str, loader expects list[float, 3]
     "action":      "repeat" / "finalize"          # placeholder step with no real data
 
-This script does a one-pass cleanup:
+This script walks <data_root>/<dataset>/episode_*/plan.json and:
 
-    1. Drop steps whose `action` is a known placeholder (repeat / finalize).
-    2. For any remaining step, coerce malformed numeric fields to loader
-       defaults (affordance -> [0.5, 0.5], approach -> [0, 0, -1]) and drop
-       non-dict `constraints`.
-    3. Rewrite plan.json in place (only when changes were made).
-    4. Print a summary grouped by split and dataset.
+    1. Drops steps whose `action` is a known placeholder (repeat / finalize).
+    2. For surviving steps, coerces malformed numeric fields to loader
+       defaults (affordance -> [0.5, 0.5], approach -> [0, 0, -1]) and
+       drops non-dict `constraints`.
+    3. Rewrites plan.json in place only when changes were needed.
+    4. Prints a summary grouped by dataset.
 
 Idempotent: running twice is a no-op on the second pass.
 
 Usage:
-    python scripts/clean_plan_schema.py                       # scan + fix all splits
-    python scripts/clean_plan_schema.py --splits train val    # subset of splits
-    python scripts/clean_plan_schema.py --dry-run             # report, don't write
+    # Data lives under the repo default (data/processed/):
+    python scripts/clean_plan_schema.py
+
+    # Data was extracted somewhere else (e.g. a training server):
+    python scripts/clean_plan_schema.py --data-root /workspace/data/processed
+
+    # Report only, don't write:
+    python scripts/clean_plan_schema.py --dry-run
 """
 import argparse
 import json
@@ -31,8 +36,7 @@ from collections import Counter, defaultdict
 from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).parent.parent
-DATA_ROOT = PROJECT_ROOT / "data" / "processed"
-SPLITS_DIR = PROJECT_ROOT / "data" / "splits"
+DEFAULT_DATA_ROOT = PROJECT_ROOT / "data" / "processed"
 
 PLACEHOLDER_ACTIONS = {"repeat", "finalize"}
 DEFAULT_AFFORDANCE = [0.5, 0.5]
@@ -52,7 +56,6 @@ def clean_plan(plan: dict) -> tuple[dict, list[str]]:
     fixes: list[str] = []
     steps = plan.get("steps", [])
 
-    # 1. Drop placeholder steps
     kept_steps = []
     for step in steps:
         if step.get("action") in PLACEHOLDER_ACTIONS:
@@ -60,7 +63,6 @@ def clean_plan(plan: dict) -> tuple[dict, list[str]]:
             continue
         kept_steps.append(step)
 
-    # 2. Coerce malformed fields in surviving steps
     for step in kept_steps:
         if not _is_numeric_list(step.get("affordance"), 2):
             fixes.append(f"coerce_affordance(step={step.get('step')})")
@@ -79,56 +81,13 @@ def clean_plan(plan: dict) -> tuple[dict, list[str]]:
     return cleaned, fixes
 
 
-def load_split_episodes(
-    split_name: str, splits_dir: Path, data_root: Path
-) -> list[Path]:
-    """Return plan.json paths for episodes listed in <splits_dir>/<split_name>.json."""
-    split_path = splits_dir / f"{split_name}.json"
-    if not split_path.exists():
-        return []
-    with open(split_path) as f:
-        data = json.load(f)
-    paths = []
-    for e in data["episodes"]:
-        p = data_root / e["dataset"] / e["episode_id"] / "plan.json"
-        if p.exists():
-            paths.append(p)
-    return paths
-
-
-def scan_filesystem(data_root: Path) -> list[Path]:
-    """Fallback when split files aren't available (e.g. on a training server
-    that only has data/processed/ extracted from a tarball)."""
-    if not data_root.exists():
-        return []
-    return sorted(data_root.glob("*/episode_*/plan.json"))
-
-
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     parser.add_argument(
-        "--splits",
-        nargs="+",
-        default=["train", "val", "test_id", "test_ood_embo", "test_ood_task"],
-        help="Which splits to process (default: all five). Ignored if --all is set "
-             "or if no split files exist on disk.",
-    )
-    parser.add_argument(
-        "--all",
-        action="store_true",
-        help="Ignore split files and walk data/processed/ directly "
-             "(use on training servers where split JSONs weren't transferred).",
-    )
-    parser.add_argument(
         "--data-root",
-        default=str(DATA_ROOT),
-        help="Root directory holding <dataset>/episode_*/plan.json subtrees "
-             f"(default: {DATA_ROOT}).",
-    )
-    parser.add_argument(
-        "--splits-dir",
-        default=str(SPLITS_DIR),
-        help=f"Directory holding split JSONs (default: {SPLITS_DIR}).",
+        default=str(DEFAULT_DATA_ROOT),
+        help="Directory holding <dataset>/episode_*/plan.json subtrees "
+             f"(default: {DEFAULT_DATA_ROOT}).",
     )
     parser.add_argument(
         "--dry-run",
@@ -138,73 +97,50 @@ def main() -> int:
     args = parser.parse_args()
 
     data_root = Path(args.data_root).resolve()
-    splits_dir = Path(args.splits_dir).resolve()
-
-    # Decide which mode to run: split-whitelisted or filesystem-walk.
-    # Auto-fallback if the user passed --splits but no split files exist.
-    has_splits = splits_dir.exists() and any(splits_dir.glob("*.json"))
-    use_filesystem = args.all or not has_splits
-    if use_filesystem and not args.all:
-        print(f"[info] {splits_dir} is empty or missing — falling back to filesystem scan")
     print(f"[info] data_root = {data_root}")
-
     if not data_root.exists():
         print(f"ERROR: data_root does not exist: {data_root}")
         print("Pass --data-root <path> pointing at the directory that contains "
               "<dataset>/episode_*/ subdirectories.")
         return 2
 
+    paths = sorted(data_root.glob("*/episode_*/plan.json"))
+    if not paths:
+        print(f"ERROR: no plan.json found under {data_root}")
+        return 2
+
     total_scanned = 0
     total_dirty = 0
     fix_counter: Counter = Counter()
-    per_split: dict[str, dict] = {}
+    per_dataset: Counter = Counter()
 
-    if use_filesystem:
-        groups = {"all": scan_filesystem(data_root)}
-    else:
-        groups = {name: load_split_episodes(name, splits_dir, data_root)
-                  for name in args.splits}
-
-    for split, paths in groups.items():
-        if not paths:
-            print(f"[{split}] no episodes on disk (or split file missing), skipping")
+    for p in paths:
+        total_scanned += 1
+        try:
+            plan = json.loads(p.read_text())
+        except json.JSONDecodeError as ex:
+            fix_counter["json_decode_error"] += 1
+            print(f"  BAD-JSON: {p} ({ex})")
             continue
 
-        dirty_files = 0
-        per_dataset = defaultdict(int)
-        for p in paths:
-            total_scanned += 1
-            try:
-                plan = json.loads(p.read_text())
-            except json.JSONDecodeError as ex:
-                fix_counter["json_decode_error"] += 1
-                print(f"  BAD-JSON: {p} ({ex})")
-                continue
-            cleaned, fixes = clean_plan(plan)
-            if not fixes:
-                continue
-            dirty_files += 1
-            total_dirty += 1
-            per_dataset[p.parent.parent.name] += 1
-            for fx in fixes:
-                fix_counter[fx.split("(")[0]] += 1
-            if not args.dry_run:
-                p.write_text(json.dumps(cleaned, indent=2, ensure_ascii=False))
+        cleaned, fixes = clean_plan(plan)
+        if not fixes:
+            continue
 
-        per_split[split] = {
-            "scanned": len(paths),
-            "dirty": dirty_files,
-            "by_dataset": dict(per_dataset),
-        }
+        total_dirty += 1
+        per_dataset[p.parent.parent.name] += 1
+        for fx in fixes:
+            fix_counter[fx.split("(")[0]] += 1
+
+        if not args.dry_run:
+            p.write_text(json.dumps(cleaned, indent=2, ensure_ascii=False))
 
     print("\n=== summary ===")
-    for split, stats in per_split.items():
-        line = f"{split:18s} scanned={stats['scanned']:5d}  dirty={stats['dirty']:4d}"
-        if stats["by_dataset"]:
-            line += f"  datasets={stats['by_dataset']}"
-        print(line)
-    print(f"\nTotal scanned: {total_scanned}   dirty: {total_dirty}")
-    print(f"Fix operations: {dict(fix_counter)}")
+    print(f"scanned: {total_scanned}")
+    print(f"dirty:   {total_dirty}")
+    if per_dataset:
+        print(f"by dataset: {dict(per_dataset)}")
+    print(f"fix ops: {dict(fix_counter)}")
     if args.dry_run:
         print("\n(dry-run, no files written)")
     return 0
