@@ -79,27 +79,29 @@ def clean_plan(plan: dict) -> tuple[dict, list[str]]:
     return cleaned, fixes
 
 
-def load_split_episodes(split_name: str) -> list[Path]:
-    """Return plan.json paths for episodes listed in data/splits/<split_name>.json."""
-    split_path = SPLITS_DIR / f"{split_name}.json"
+def load_split_episodes(
+    split_name: str, splits_dir: Path, data_root: Path
+) -> list[Path]:
+    """Return plan.json paths for episodes listed in <splits_dir>/<split_name>.json."""
+    split_path = splits_dir / f"{split_name}.json"
     if not split_path.exists():
         return []
     with open(split_path) as f:
         data = json.load(f)
     paths = []
     for e in data["episodes"]:
-        p = DATA_ROOT / e["dataset"] / e["episode_id"] / "plan.json"
+        p = data_root / e["dataset"] / e["episode_id"] / "plan.json"
         if p.exists():
             paths.append(p)
     return paths
 
 
-def scan_filesystem() -> list[Path]:
+def scan_filesystem(data_root: Path) -> list[Path]:
     """Fallback when split files aren't available (e.g. on a training server
     that only has data/processed/ extracted from a tarball)."""
-    if not DATA_ROOT.exists():
+    if not data_root.exists():
         return []
-    return sorted(DATA_ROOT.glob("*/episode_*/plan.json"))
+    return sorted(data_root.glob("*/episode_*/plan.json"))
 
 
 def main() -> int:
@@ -118,17 +120,39 @@ def main() -> int:
              "(use on training servers where split JSONs weren't transferred).",
     )
     parser.add_argument(
+        "--data-root",
+        default=str(DATA_ROOT),
+        help="Root directory holding <dataset>/episode_*/plan.json subtrees "
+             f"(default: {DATA_ROOT}).",
+    )
+    parser.add_argument(
+        "--splits-dir",
+        default=str(SPLITS_DIR),
+        help=f"Directory holding split JSONs (default: {SPLITS_DIR}).",
+    )
+    parser.add_argument(
         "--dry-run",
         action="store_true",
         help="Report planned fixes without writing any files.",
     )
     args = parser.parse_args()
 
+    data_root = Path(args.data_root).resolve()
+    splits_dir = Path(args.splits_dir).resolve()
+
     # Decide which mode to run: split-whitelisted or filesystem-walk.
     # Auto-fallback if the user passed --splits but no split files exist.
-    use_filesystem = args.all or not SPLITS_DIR.exists() or not any(SPLITS_DIR.glob("*.json"))
+    has_splits = splits_dir.exists() and any(splits_dir.glob("*.json"))
+    use_filesystem = args.all or not has_splits
     if use_filesystem and not args.all:
-        print(f"[info] {SPLITS_DIR} is empty or missing — falling back to filesystem scan")
+        print(f"[info] {splits_dir} is empty or missing — falling back to filesystem scan")
+    print(f"[info] data_root = {data_root}")
+
+    if not data_root.exists():
+        print(f"ERROR: data_root does not exist: {data_root}")
+        print("Pass --data-root <path> pointing at the directory that contains "
+              "<dataset>/episode_*/ subdirectories.")
+        return 2
 
     total_scanned = 0
     total_dirty = 0
@@ -136,9 +160,10 @@ def main() -> int:
     per_split: dict[str, dict] = {}
 
     if use_filesystem:
-        groups = {"all": scan_filesystem()}
+        groups = {"all": scan_filesystem(data_root)}
     else:
-        groups = {name: load_split_episodes(name) for name in args.splits}
+        groups = {name: load_split_episodes(name, splits_dir, data_root)
+                  for name in args.splits}
 
     for split, paths in groups.items():
         if not paths:
