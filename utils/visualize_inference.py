@@ -69,8 +69,12 @@ def _norm_to_pixel(u: float, v: float, w: int, h: int) -> tuple[int, int]:
     )
 
 
-def _iter_planning_points(structured: dict) -> Iterable[tuple[int, str, str, list[float]]]:
-    """Yield (step_num, action, target, [u, v]) for each step that has affordance."""
+def _iter_planning_points(structured: dict) -> Iterable[tuple[int, str, str, str, list[float]]]:
+    """Yield (step_num, action, target, hint, [u, v]) for each step with affordance.
+
+    `hint` is the affordance_hint string (idea B) or empty if absent — caller
+    decides whether to include it in the rendered label.
+    """
     for s in structured.get("steps", []):
         aff = s.get("affordance")
         if not aff or len(aff) < 2:
@@ -79,6 +83,7 @@ def _iter_planning_points(structured: dict) -> Iterable[tuple[int, str, str, lis
             s.get("step", 0),
             s.get("action", "?"),
             s.get("target", "?"),
+            s.get("affordance_hint", "") or "",
             aff,
         )
 
@@ -109,10 +114,15 @@ def render(image_path: str | Path, structured: dict, task: str,
     drawn = 0
 
     if task == "planning":
-        for step_num, action, target, (u, v) in _iter_planning_points(structured):
+        for step_num, action, target, hint, (u, v) in _iter_planning_points(structured):
             color = _STEP_COLORS[(step_num - 1) % len(_STEP_COLORS)]
             x, y = _norm_to_pixel(u, v, w, h)
-            label = f"{step_num}.{action}({target})"
+            # Prefer hint over (action,target) when present — it's the
+            # part-aware description and more useful for visual review.
+            if hint:
+                label = f"{step_num}. {hint}"
+            else:
+                label = f"{step_num}.{action}({target})"
             _draw_point(draw, x, y, color, label=label, font=font)
             drawn += 1
 
@@ -120,7 +130,8 @@ def render(image_path: str | Path, structured: dict, task: str,
         u, v = structured.get("u"), structured.get("v")
         if u is not None and v is not None:
             x, y = _norm_to_pixel(float(u), float(v), w, h)
-            label = "affordance"
+            hint = structured.get("affordance_hint")
+            label = hint if hint else "affordance"
             ga = structured.get("gripper_width")
             if ga is not None:
                 label += f" w={ga:.2f}"

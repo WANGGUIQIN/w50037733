@@ -55,11 +55,15 @@ _ASSISTANT_MARKER = "<|im_start|>assistant\n"
 
 TASK_TEMPLATES = {
     # Affordance prediction: our primary training task.
+    # Idea-B-aware: ask for the semantic part description BEFORE the coordinate
+    # so the language head conditions the visual head — reduces center bias.
     "affordance": (
         "{text}. Please predict the affordance point and manipulation "
-        "constraints for completing this task. Your answer should include: "
-        "the affordance coordinates as [u, v] in normalized image space, "
-        "gripper_width, and approach vector as [x, y, z]."
+        "constraints for completing this task. First describe the semantic "
+        "part to interact with as 'affordance_hint: <part description>' "
+        "(e.g. 'the handle of the mug', 'the top opening of the rack peg'). "
+        "Then output the affordance coordinates as [u, v] in normalized image "
+        "space, gripper_width, and approach vector as [x, y, z]."
     ),
     # Pointing: RoboBrain2.5's pointing task (2D coordinate output)
     "pointing": (
@@ -80,15 +84,17 @@ TASK_TEMPLATES = {
         "Please provide the bounding box coordinate of the region this "
         "sentence describes: {text}."
     ),
-    # Task planning: decompose into operation primitives with constraints
+    # Task planning: decompose into operation primitives with constraints.
+    # affordance_hint requested per step before the (u, v) coord (idea B).
     "planning": (
         'Analyze the scene and plan the manipulation steps to complete the '
         'task: "{text}". For each step, provide: the operation primitive '
         '(reach/grasp/transport/place/push/pull/insert/pour/rotate/release/flip/wipe), '
-        'target object, affordance point [u, v], approach direction [x, y, z], '
-        'and constraints organized by category (contact, spatial, pose, direction, '
-        'safety) with role labels (completion, safety, progress). '
-        'Include a done_when completion condition for each step.'
+        'target object, affordance_hint (the semantic part to interact with, '
+        "e.g. 'the handle of the mug'), affordance point [u, v], approach "
+        'direction [x, y, z], and constraints organized by category (contact, '
+        'spatial, pose, direction, safety) with role labels (completion, safety, '
+        'progress). Include a done_when completion condition for each step.'
     ),
     # General VQA: pass through as-is
     "general": "{text}",
@@ -102,6 +108,12 @@ TASK_TEMPLATES = {
 _AFF_RE = re.compile(
     # Match both "[0.5, 0.5]" and "[u=0.5, v=0.5]"
     r"affordance[:\s]*\[\s*(?:u=)?([0-9.]+)[,\s]+(?:v=)?([0-9.]+)\s*\]", re.I,
+)
+# affordance_hint: short noun phrase describing the semantic part. Captures up
+# to a newline, period, or "affordance" keyword (whichever comes first) so we
+# don't slurp the coordinate line.
+_HINT_RE = re.compile(
+    r"affordance_hint[:\s]+([^\n.]+?)(?=\s*(?:\n|\.|affordance[:\s]*\[))", re.I,
 )
 _WID_RE = re.compile(r"gripper_width\s*=\s*([0-9.]+)", re.I)
 _APP_RE = re.compile(
@@ -117,12 +129,15 @@ def parse_affordance_output(text: str) -> dict:
 
     Expected format::
 
+        affordance_hint: the handle of the mug.
         affordance: [u, v]. constraint: gripper_width=X, approach=[x, y, z].
 
     Returns:
-        dict with keys: u, v, gripper_width, approach (each None if not found).
+        dict with keys: u, v, gripper_width, approach, affordance_hint
+        (each None if not found).
     """
-    out: dict = {"u": None, "v": None, "gripper_width": None, "approach": None}
+    out: dict = {"u": None, "v": None, "gripper_width": None,
+                 "approach": None, "affordance_hint": None}
     m = _AFF_RE.search(text)
     if m:
         out["u"] = float(m.group(1))
@@ -133,6 +148,9 @@ def parse_affordance_output(text: str) -> dict:
     m = _APP_RE.search(text)
     if m:
         out["approach"] = [float(m.group(i)) for i in range(1, 4)]
+    m = _HINT_RE.search(text)
+    if m:
+        out["affordance_hint"] = m.group(1).strip().strip(".,;")
     return out
 
 
@@ -216,6 +234,11 @@ def parse_planning_output(text: str) -> dict:
 
         if "step" not in step:
             continue
+
+        # Parse affordance_hint (idea B: semantic part description per step)
+        m = _HINT_RE.search(part)
+        if m:
+            step["affordance_hint"] = m.group(1).strip().strip(".,;")
 
         # Parse affordance
         m = _AFF_RE.search(part)

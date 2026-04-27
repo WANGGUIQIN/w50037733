@@ -188,6 +188,13 @@ class UnifiedDataset(Dataset):
                 header = f"Step {step_num}: {action}({target_obj})"
 
             lines.append(header)
+            # affordance_hint: idea-B part-aware description. Prepended to the
+            # coord line so the LM produces the part name BEFORE the (u, v) —
+            # this conditions the visual head on the language head and reduces
+            # mid-object center bias. Skipped when missing (legacy plans).
+            hint = step.get("affordance_hint", "")
+            if isinstance(hint, str) and hint.strip():
+                lines.append(f"  affordance_hint: {hint.strip()}")
             # .3f precision so models learn 1000-bin resolution instead of 100;
             # u=/v= prefixes give explicit field-name context for the decoder.
             lines.append(

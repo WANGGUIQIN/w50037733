@@ -50,6 +50,39 @@ DESTINATION_ACTIONS = {"transport", "place", "insert", "pour"}
 
 POINT_RE = re.compile(r"\(\s*(\d+)\s*,\s*(\d+)\s*\)")
 
+# Idea B: action -> semantic part template. RoboBrain pointing on the templated
+# query lands on the functional part (e.g., handle) instead of object center.
+# Validated on 5 cases: 4/5 wins (only butter_dairy fails because it has no handle).
+ACTION_PART = {
+    "reach":     "the {obj}",
+    "grasp":     "the handle of the {obj}",
+    "pick":      "the handle of the {obj}",
+    "lift":      "the handle of the {obj}",
+    "rotate":    "the body of the {obj}",
+    "press":     "the center of the {obj}",
+    "push":      "the center of the {obj}",
+    "pull":      "the handle of the {obj}",
+    "place":     "an empty area on the {obj}",
+    "transport": "an empty area on the {obj}",
+    "insert":    "the top opening of the {obj}",
+    "pour":      "the inside of the {obj}",
+    "flip":      "the body of the {obj}",
+    "wipe":      "the surface of the {obj}",
+    "release":   "the {obj}",
+    "open":      "the handle of the {obj}",
+    "close":     "the handle of the {obj}",
+}
+
+# Objects that have no natural "handle" / functional part — fall back to bare
+# query to avoid RoboBrain getting confused by a non-existent affordance hint.
+# Triggered when the lowercase object name CONTAINS any of these tokens.
+NO_HANDLE_TOKENS = {
+    "butter", "dairy", "package", "box", "block", "cube", "ball", "sphere",
+    "rag", "cloth", "towel", "paper", "card", "coin", "battery", "marker",
+    "sponge", "candy", "carrot", "potato", "onion", "tomato", "lemon",
+    "apple", "banana", "orange", "egg", "bread", "cheese",
+}
+
 
 def pixel_to_3d(u: float, v: float, depth_map: np.ndarray,
                 intrinsics: list) -> list | None:
@@ -111,6 +144,45 @@ def resolve_query(step: dict) -> str:
     return raw or ""
 
 
+def _has_no_handle(obj: str) -> bool:
+    """True if obj name contains a token that suggests no functional handle."""
+    obj_lower = obj.lower()
+    return any(tok in obj_lower for tok in NO_HANDLE_TOKENS)
+
+
+def build_query(step: dict, mode: str = "template") -> str:
+    """Construct RoboBrain pointing query.
+
+    mode='bare':     "red_jar" (legacy)
+    mode='template': "the handle of the red jar" (idea B, default)
+
+    Falls back to bare query when:
+      - action not in ACTION_PART table (unknown verb)
+      - obj name suggests no functional handle (butter, package, ...)
+    Returns the query string with underscores replaced by spaces.
+    """
+    raw_obj = resolve_query(step)
+    if not raw_obj:
+        return ""
+    obj_disp = raw_obj.replace("_", " ")
+    if mode == "bare":
+        return obj_disp
+
+    action = step.get("action", "").lower()
+    template = ACTION_PART.get(action)
+    if template is None:
+        return obj_disp
+    # Skip handle-mentioning templates for handle-less objects (butter, towel,
+    # block, ...). Place/insert/pour templates ("an empty area on the {obj}",
+    # "the top opening of the {obj}") still make sense and are kept.
+    if "handle of" in template and _has_no_handle(raw_obj):
+        return obj_disp
+    # For "the {obj}" template, equivalent to bare; skip to keep cache consistent.
+    if template == "the {obj}":
+        return f"the {obj_disp}"
+    return template.format(obj=obj_disp)
+
+
 def refine_plan(
     model: UnifiedInference,
     plan: dict,
@@ -118,26 +190,36 @@ def refine_plan(
     cache: dict,
     depth_map: np.ndarray | None = None,
     intrinsics: list | None = None,
+    query_mode: str = "template",
 ) -> tuple[dict, int, int]:
     """Refine affordance per step. Adds affordance_3d if depth+intrinsics given.
+
+    Cache key is (action, query) so the same target with different actions
+    (e.g. grasp vs place on the same object) gets distinct affordance points.
+
+    Each refined step also gets an `affordance_hint` field with the templated
+    query string — this is the supervision signal for part-aware training and
+    the human-readable explanation of what the (u, v) coord means.
 
     Returns (new_plan, hit, miss).
     """
     hit = 0
     miss = 0
     for step in plan["steps"]:
-        query = resolve_query(step)
+        query = build_query(step, mode=query_mode)
         if not query:
             miss += 1
             continue
 
-        if query in cache:
-            new_aff = cache[query]
+        action = step.get("action", "")
+        cache_key = (action, query)
+        if cache_key in cache:
+            new_aff = cache[cache_key]
         else:
             try:
                 with contextlib.redirect_stdout(io.StringIO()):
                     result = model.inference(
-                        text=query.replace("_", " "),
+                        text=query,
                         image=image_path,
                         task="pointing",
                         do_sample=False,
@@ -147,7 +229,11 @@ def refine_plan(
             except Exception as e:
                 print(f"    WARN: inference failed for '{query}': {e}")
                 new_aff = None
-            cache[query] = new_aff
+            cache[cache_key] = new_aff
+
+        # Always record the hint so downstream training has the part name even
+        # if pointing failed (training still benefits from the hint as input).
+        step["affordance_hint"] = query
 
         if new_aff is not None:
             step["affordance"] = list(new_aff)
@@ -166,6 +252,7 @@ def process_episode(
     model: UnifiedInference,
     ep_dir: Path,
     dry_run: bool,
+    query_mode: str = "template",
 ) -> tuple[bool, int, int]:
     plan_path = ep_dir / "plan.json"
     rgb_path = ep_dir / "rgb_0.png"
@@ -176,11 +263,12 @@ def process_episode(
         plan = json.load(f)
 
     old_affordances = [tuple(s.get("affordance", [])) for s in plan["steps"]]
-    cache: dict[str, tuple[float, float] | None] = {}
+    cache: dict[tuple[str, str], tuple[float, float] | None] = {}
 
     depth_map, intrinsics = load_depth_and_intrinsics(ep_dir)
     plan, hit, miss = refine_plan(model, plan, str(rgb_path), cache,
-                                  depth_map=depth_map, intrinsics=intrinsics)
+                                  depth_map=depth_map, intrinsics=intrinsics,
+                                  query_mode=query_mode)
 
     if dry_run:
         new_affordances = [tuple(s.get("affordance", [])) for s in plan["steps"]]
@@ -188,9 +276,10 @@ def process_episode(
         for i, (old, new, step) in enumerate(
             zip(old_affordances, new_affordances, plan["steps"]), 1
         ):
-            q = resolve_query(step)
+            hint = step.get("affordance_hint", "")
             changed = "*" if old != new else " "
-            print(f"    {changed} step {i} {step['action']}({q}): {old} -> {new}")
+            print(f"    {changed} step {i} {step['action']} -> "
+                  f"hint={hint!r}: {old} -> {new}")
         return (True, hit, miss)
 
     backup_path = ep_dir / BACKUP_SUFFIX
@@ -216,6 +305,10 @@ def main():
     parser.add_argument("--resume", action="store_true", help="Skip episodes whose backup already exists.")
     parser.add_argument("--dry-run", action="store_true", help="Print comparisons, don't write.")
     parser.add_argument("--device", default="cuda:0")
+    parser.add_argument("--query-mode", choices=["bare", "template"], default="template",
+                        help="bare: query RoboBrain with raw object name (legacy). "
+                             "template: action-aware query (idea B, default), e.g. "
+                             "'the handle of the red jar' for grasp.")
     args = parser.parse_args()
 
     if args.splits:
@@ -243,6 +336,7 @@ def main():
 
     print(f"Model: {args.model_path}")
     print(f"Episodes: {len(episodes)}")
+    print(f"Query mode: {args.query_mode}")
     print(f"Dry run: {args.dry_run}")
     if not episodes:
         print("Nothing to do.")
@@ -258,7 +352,8 @@ def main():
     ok = 0
     t_start = time.time()
     for i, ep in enumerate(episodes, 1):
-        processed, hit, miss = process_episode(model, ep, args.dry_run)
+        processed, hit, miss = process_episode(model, ep, args.dry_run,
+                                               query_mode=args.query_mode)
         if processed:
             ok += 1
             total_hit += hit

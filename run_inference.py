@@ -118,6 +118,8 @@ def format_plan_as_json(raw_text: str, task: str) -> dict:
         }
         if step.get("destination"):
             s["destination"] = step["destination"]
+        if step.get("affordance_hint"):
+            s["affordance_hint"] = step["affordance_hint"]
         if step.get("affordance"):
             s["affordance"] = step["affordance"]
         if step.get("approach"):
