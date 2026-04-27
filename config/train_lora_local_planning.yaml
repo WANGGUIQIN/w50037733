@@ -1,25 +1,25 @@
-# RoboBrain-3DGS LoRA Fine-tuning — Planning + idea-B (4x B200 192GB)
+# RoboBrain-3DGS LoRA — Planning + idea-B (Single 32GB GPU, current hardware)
 #
-# Target hardware: 4x NVIDIA B200 (192GB HBM3e each).
-# Pipeline: unified_loader (planning task) -> targets include affordance_hint
-#           line per step (idea B), so max_seq_length is bumped vs legacy
-#           affordance task (~3x text per sample).
+# Target hardware: 1x 32GB GPU (current edge box has 4x 32GB).
+# Pipeline: identical to train_lora_planning.yaml (B200) but with batch sizes
+# tuned for 32GB. Use this for local debugging / sanity-check runs before
+# moving to B200 cluster.
 #
-# Usage:
-#   deepspeed --num_gpus=4 train.py --config config/train_lora_planning.yaml
+# Usage (single GPU, no DeepSpeed):
+#   CUDA_VISIBLE_DEVICES=3 python train.py --config config/train_lora_local_planning.yaml
 #
-# Memory estimate per GPU: ~110GB / 192GB (57%)
-# Global batch size: 8 * 4 * 4 = 128
+# Memory estimate: ~22GB / 32GB (69%)
+# Global batch size: 2 * 1 * 8 = 16
 
 # === Model ===
 model:
   base_model: "/home/edge/Embodied/models/RoboBrain2.5-8B-NV"
-  num_gaussians: 1024
+  num_gaussians: 256             # smaller for 32GB; B200 uses 1024
   sh_degree: 2
-  num_gs_tokens: 64
-  gs_encoder_dim: 512
+  num_gs_tokens: 16              # smaller; B200 uses 64
+  gs_encoder_dim: 256
   freeze_vision_encoder: true
-  predict_uncertainty: true    # VarSplat-inspired per-Gaussian uncertainty
+  predict_uncertainty: true
   torch_dtype: "bfloat16"
 
 # === Fine-tuning Mode ===
@@ -27,22 +27,17 @@ finetune_mode: "lora"
 
 # === LoRA Configuration ===
 lora:
-  r: 16
-  lora_alpha: 32
+  r: 8                           # smaller adapter to fit 32GB; B200 uses 16
+  lora_alpha: 16
   lora_dropout: 0.05
   target_modules:
     - "q_proj"
     - "v_proj"
-    - "k_proj"
-    - "o_proj"
   bias: "none"
   task_type: "CAUSAL_LM"
 
-# === Prompt (Qwen3-VL chat template) ===
+# === Prompt ===
 prompt:
-  # System prompt teaches the model to emit affordance_hint BEFORE the (u, v)
-  # coordinate per step (idea-B grounding). The hint constrains the visual
-  # head with the language head, reducing center-of-object bias.
   system_prompt: >-
     You are RoboBrain, an embodied AI assistant with 3D spatial understanding
     specialized in robotic manipulation planning. Given a scene image and a
@@ -61,53 +56,46 @@ prompt:
     constraint predicates, and done_when for each step. Do NOT use markdown
     formatting.
   disable_system_prompt: false
-  # Bumped from 512 -> 1280: affordance_hint adds ~10-30 tokens per step,
-  # 4-step plans with constraints commonly hit ~900 tokens.
   max_seq_length: 1280
 
 # === Data ===
 data:
   unified_root: "/home/edge/Embodied/robobrain_3dgs/data/processed"
-  # null = use all datasets present on disk (after idea-B refine: all 7
-  # datasets in train.json have plan.json with affordance_hint).
-  unified_datasets: null
+  unified_datasets: null         # all datasets
   unified_task_type: "planning"
   image_size: 256
   camera: "front"
-  max_frames: -1               # -1 = all
+  max_frames: -1
 
-# === Training (4x B200, 192GB each) ===
+# === Training (single 32GB GPU) ===
 training:
-  output_dir: "/home/edge/Embodied/robobrain_3dgs/outputs/lora_planning_b200"
+  output_dir: "/home/edge/Embodied/robobrain_3dgs/outputs/lora_planning_local"
   num_epochs: 3
-  per_device_batch_size: 8     # B200 192GB: 8/GPU * 4 GPU * 4 accum = 128 global
-  gradient_accumulation_steps: 4
-  learning_rate: 2.0e-4        # LoRA adapter LR
-  lr_3d_branch: 1.0e-3         # 3D branch LR (new params, higher)
+  per_device_batch_size: 2       # 32GB ceiling with 1280 seq
+  gradient_accumulation_steps: 8 # global = 2 * 1 * 8 = 16
+  learning_rate: 1.0e-4          # smaller batch -> smaller LR (linear scaling vs B200's 2e-4 / batch 128)
+  lr_3d_branch: 5.0e-4
   weight_decay: 0.01
   warmup_ratio: 0.05
   max_grad_norm: 1.0
-  logging_steps: 10
-  save_steps: 500
-  eval_steps: 200
+  logging_steps: 5
+  save_steps: 200
+  eval_steps: 100
   seed: 42
+  use_fused_adam: false          # no DeepSpeed -> standard AdamW
 
 # === Rendering Loss ===
 rendering_loss:
   enabled: true
-  render_size: 128             # B200 has enough VRAM for higher-res rendering
+  render_size: 64                # smaller; B200 uses 128
   lambda_l1: 0.8
   lambda_ssim: 0.2
   lambda_depth: 0.5
   lambda_opacity: 0.01
-  lambda_uncertainty: 0.1      # VarSplat geometry variance loss
+  lambda_uncertainty: 0.1
   weight: 0.1
 
 # === Checkpoint ===
 checkpoint:
-  keep_last_n: 3
-  save_optimizer_state: true
-
-# === DeepSpeed ===
-deepspeed:
-  config: "/home/edge/Embodied/robobrain_3dgs/config/deepspeed_zero2_b200.json"
+  keep_last_n: 2
+  save_optimizer_state: false    # save space; reload-from-disk fine for local debug

@@ -1,4 +1,7 @@
-# Planning mode test config - single GPU dry-run
+# Test training config — dry-run validation on local RLBench data
+# Usage: python train.py --config config/train_test.yaml --dry_run
+
+# === Model ===
 model:
   base_model: "/home/edge/Embodied/models/RoboBrain2.5-8B-NV"
   num_gaussians: 256
@@ -9,8 +12,10 @@ model:
   predict_uncertainty: true
   torch_dtype: "bfloat16"
 
+# === Fine-tuning Mode ===
 finetune_mode: "lora"
 
+# === LoRA Configuration ===
 lora:
   r: 8
   lora_alpha: 16
@@ -21,15 +26,16 @@ lora:
   bias: "none"
   task_type: "CAUSAL_LM"
 
+# === Prompt ===
 prompt:
   system_prompt: >-
     You are RoboBrain, an embodied AI assistant specialized in robotic
-    manipulation planning. Given a scene image and a task instruction,
-    output a structured task decomposition with operation primitives
-    and per-stage geometric constraints.
+    manipulation. Given an image of a scene with 3D spatial understanding,
+    provide precise affordance predictions and manipulation constraints.
   disable_system_prompt: false
-  max_seq_length: 512
+  max_seq_length: 1024
 
+# === Data ===
 data:
   unified_root: "/home/edge/Embodied/robobrain_3dgs/data/processed"
   unified_datasets:
@@ -39,8 +45,9 @@ data:
   camera: "front"
   max_frames: 20
 
+# === Training ===
 training:
-  output_dir: "/home/edge/Embodied/robobrain_3dgs/outputs/test_planning"
+  output_dir: "/home/edge/Embodied/robobrain_3dgs/outputs/test"
   num_epochs: 1
   per_device_batch_size: 1
   gradient_accumulation_steps: 1
@@ -54,6 +61,7 @@ training:
   eval_steps: 999999
   seed: 42
 
+# === Rendering Loss ===
 rendering_loss:
   enabled: true
   render_size: 32
@@ -64,6 +72,7 @@ rendering_loss:
   lambda_uncertainty: 0.1
   weight: 0.1
 
+# === Checkpoint ===
 checkpoint:
   keep_last_n: 1
   save_optimizer_state: false

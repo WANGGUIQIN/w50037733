@@ -1,15 +1,19 @@
-# RoboBrain-3DGS LoRA Fine-tuning — Planning + idea-B (4x B200 192GB)
+# RoboBrain-3DGS Full Fine-tuning — Planning + idea-B (4x B200 192GB)
 #
 # Target hardware: 4x NVIDIA B200 (192GB HBM3e each).
 # Pipeline: unified_loader (planning task) -> targets include affordance_hint
-#           line per step (idea B), so max_seq_length is bumped vs legacy
-#           affordance task (~3x text per sample).
+#           per step (idea B). Full fine-tune unfreezes all 36 LLM layers + lm_head;
+#           use this when LoRA adapter capacity has plateaued.
 #
 # Usage:
-#   deepspeed --num_gpus=4 train.py --config config/train_lora_planning.yaml
+#   deepspeed --num_gpus=4 train.py --config config/train_full_b200_planning.yaml
 #
-# Memory estimate per GPU: ~110GB / 192GB (57%)
-# Global batch size: 8 * 4 * 4 = 128
+# Memory estimate per GPU: ~150GB / 192GB (78%)
+#   - model bf16:        16GB
+#   - optimizer (ZeRO-2): 96GB / 4 = 24GB
+#   - gradients:         16GB
+#   - activations:       ~80GB (large batch + 1280 seq + bs=4)
+# Global batch size: 4 * 4 * 4 = 64
 
 # === Model ===
 model:
@@ -19,30 +23,20 @@ model:
   num_gs_tokens: 64
   gs_encoder_dim: 512
   freeze_vision_encoder: true
-  predict_uncertainty: true    # VarSplat-inspired per-Gaussian uncertainty
+  predict_uncertainty: true
   torch_dtype: "bfloat16"
 
 # === Fine-tuning Mode ===
-finetune_mode: "lora"
+finetune_mode: "full"
 
-# === LoRA Configuration ===
-lora:
-  r: 16
-  lora_alpha: 32
-  lora_dropout: 0.05
-  target_modules:
-    - "q_proj"
-    - "v_proj"
-    - "k_proj"
-    - "o_proj"
-  bias: "none"
-  task_type: "CAUSAL_LM"
+# === Full Fine-tuning Configuration ===
+full_finetune:
+  unfreeze_llm_layers: -1              # All 36 layers
+  unfreeze_lm_head: true
+  gradient_checkpointing: false        # B200 has 192GB; skip checkpointing for ~30% speedup
 
 # === Prompt (Qwen3-VL chat template) ===
 prompt:
-  # System prompt teaches the model to emit affordance_hint BEFORE the (u, v)
-  # coordinate per step (idea-B grounding). The hint constrains the visual
-  # head with the language head, reducing center-of-object bias.
   system_prompt: >-
     You are RoboBrain, an embodied AI assistant with 3D spatial understanding
     specialized in robotic manipulation planning. Given a scene image and a
@@ -61,53 +55,53 @@ prompt:
     constraint predicates, and done_when for each step. Do NOT use markdown
     formatting.
   disable_system_prompt: false
-  # Bumped from 512 -> 1280: affordance_hint adds ~10-30 tokens per step,
-  # 4-step plans with constraints commonly hit ~900 tokens.
   max_seq_length: 1280
 
 # === Data ===
 data:
   unified_root: "/home/edge/Embodied/robobrain_3dgs/data/processed"
-  # null = use all datasets present on disk (after idea-B refine: all 7
-  # datasets in train.json have plan.json with affordance_hint).
-  unified_datasets: null
+  unified_datasets: null            # all 7 datasets after idea-B refine
   unified_task_type: "planning"
   image_size: 256
   camera: "front"
-  max_frames: -1               # -1 = all
+  max_frames: -1
 
-# === Training (4x B200, 192GB each) ===
+# === Training (4x B200) ===
 training:
-  output_dir: "/home/edge/Embodied/robobrain_3dgs/outputs/lora_planning_b200"
+  output_dir: "/home/edge/Embodied/robobrain_3dgs/outputs/full_planning_b200"
   num_epochs: 3
-  per_device_batch_size: 8     # B200 192GB: 8/GPU * 4 GPU * 4 accum = 128 global
-  gradient_accumulation_steps: 4
-  learning_rate: 2.0e-4        # LoRA adapter LR
-  lr_3d_branch: 1.0e-3         # 3D branch LR (new params, higher)
+  per_device_batch_size: 4             # full FT is 2x more memory-hungry than LoRA
+  gradient_accumulation_steps: 4       # global = 4 * 4 * 4 = 64
+  learning_rate: 5.0e-5                # full FT: 4x lower than LoRA (whole LLM moves)
+  lr_3d_branch: 1.0e-3
   weight_decay: 0.01
-  warmup_ratio: 0.05
+  warmup_ratio: 0.1                    # longer warmup for full FT stability
   max_grad_norm: 1.0
   logging_steps: 10
   save_steps: 500
   eval_steps: 200
   seed: 42
+  use_fused_adam: true                 # ~10% speedup, requires DeepSpeed
 
 # === Rendering Loss ===
 rendering_loss:
   enabled: true
-  render_size: 128             # B200 has enough VRAM for higher-res rendering
+  render_size: 128
   lambda_l1: 0.8
   lambda_ssim: 0.2
   lambda_depth: 0.5
   lambda_opacity: 0.01
-  lambda_uncertainty: 0.1      # VarSplat geometry variance loss
+  lambda_uncertainty: 0.1
   weight: 0.1
 
 # === Checkpoint ===
+# Full FT ckpt is huge: 16GB weights + 32GB optimizer (FP32 master) = 48GB/ckpt.
+# keep_last_n=2 means peak disk = 2 * 48GB + best ckpt = ~144GB.
 checkpoint:
-  keep_last_n: 3
+  keep_last_n: 2
   save_optimizer_state: true
 
 # === DeepSpeed ===
+# ZeRO-2: shard optimizer + gradients across 4 GPUs (no CPU offload — B200 fits).
 deepspeed:
   config: "/home/edge/Embodied/robobrain_3dgs/config/deepspeed_zero2_b200.json"
