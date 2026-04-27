@@ -30,6 +30,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent))
 
 from utils.prompt_utils import parse_planning_output, parse_affordance_output
+from utils.visualize_inference import render as render_inference
 
 
 def _parse_markdown_plan(text: str) -> dict:
@@ -172,6 +173,11 @@ def main():
     parser.add_argument("--output_dir", default=None, help="Save JSON results to dir")
     parser.add_argument("--temperature", type=float, default=0.3)
     parser.add_argument("--max_tokens", type=int, default=1024)
+    parser.add_argument("--visualize", action="store_true",
+                        help="Save affordance-overlay PNG next to JSON output. "
+                             "Single-image mode -> result_viz.png in --output_dir "
+                             "(or alongside --image if no output_dir). "
+                             "Batch mode -> <episode>_viz.png per episode.")
     args = parser.parse_args()
 
     from inference_3dgs import UnifiedInference3DGS
@@ -218,6 +224,16 @@ def main():
                 with open(save_path, "w") as f:
                     json.dump(out["structured"], f, indent=2, ensure_ascii=False)
 
+            # Optional affordance visualization
+            if args.visualize:
+                viz_dir = Path(args.output_dir) if args.output_dir else ep_dir
+                viz_path = viz_dir / f"{ep_dir.name}_viz.png"
+                try:
+                    render_inference(image, out["structured"], args.task, viz_path)
+                    print(f"  viz -> {viz_path}")
+                except Exception as e:
+                    print(f"  WARN visualize failed for {ep_dir.name}: {e}")
+
     elif args.image:
         out = run_single(model, args.image, args.depth,
                          args.text or "describe the scene", args.task,
@@ -228,6 +244,19 @@ def main():
         if args.output_dir:
             with open(Path(args.output_dir) / "result.json", "w") as f:
                 json.dump(out["structured"], f, indent=2, ensure_ascii=False)
+
+        if args.visualize:
+            if args.output_dir:
+                viz_path = Path(args.output_dir) / "result_viz.png"
+            else:
+                viz_path = Path(args.image).with_name(
+                    Path(args.image).stem + "_viz.png"
+                )
+            try:
+                render_inference(args.image, out["structured"], args.task, viz_path)
+                print(f"viz -> {viz_path}")
+            except Exception as e:
+                print(f"WARN visualize failed: {e}")
     else:
         parser.print_help()
         sys.exit(1)
