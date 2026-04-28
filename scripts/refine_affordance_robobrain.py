@@ -303,6 +303,9 @@ def main():
     parser.add_argument("--end", type=int, default=-1)
     parser.add_argument("--limit", type=int, default=-1, help="Process only first N episodes (for dry-run).")
     parser.add_argument("--resume", action="store_true", help="Skip episodes whose backup already exists.")
+    parser.add_argument("--shard", default=None,
+                        help="N/M form: take every M-th episode starting from N "
+                             "(e.g. --shard 0/4 with 4 workers each on a disjoint subset).")
     parser.add_argument("--dry-run", action="store_true", help="Print comparisons, don't write.")
     parser.add_argument("--device", default="cuda:0")
     parser.add_argument("--query-mode", choices=["bare", "template"], default="template",
@@ -331,8 +334,33 @@ def main():
         episodes = episodes[args.start:]
     if args.limit > 0:
         episodes = episodes[:args.limit]
+    if args.shard:
+        try:
+            shard_n, shard_m = (int(x) for x in args.shard.split("/"))
+        except Exception:
+            print(f"ERROR: --shard must be N/M form, got {args.shard!r}")
+            sys.exit(1)
+        if not (0 <= shard_n < shard_m):
+            print(f"ERROR: --shard requires 0 <= N < M, got {shard_n}/{shard_m}")
+            sys.exit(1)
+        episodes = episodes[shard_n::shard_m]
+        print(f"Shard: {shard_n}/{shard_m} -> {len(episodes)} episodes for this worker.")
     if args.resume:
-        episodes = [e for e in episodes if not (e / BACKUP_SUFFIX).exists()]
+        def _already_refined(ep: Path) -> bool:
+            pj = ep / "plan.json"
+            if not pj.exists():
+                return False
+            try:
+                with open(pj) as f:
+                    plan = json.load(f)
+            except Exception:
+                return False
+            steps = plan.get("steps", [])
+            return bool(steps) and any(s.get("affordance_hint") for s in steps)
+        before = len(episodes)
+        episodes = [e for e in episodes if not _already_refined(e)]
+        print(f"Resume: skipped {before - len(episodes)} already-refined episodes "
+              f"(via affordance_hint field).")
 
     print(f"Model: {args.model_path}")
     print(f"Episodes: {len(episodes)}")
