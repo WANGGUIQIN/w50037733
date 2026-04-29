@@ -186,6 +186,21 @@ _STEP_DEST_RE = re.compile(
     r"Step\s+(\d+):\s*(\w+)\((.+?)\s*->\s*(.+?)\)", re.I,
 )
 
+# Fallback for outputs where the model dropped the "Step N:" prefix and/or
+# newlines (common with the base model on the compact-format prompt). We
+# enumerate the manipulation primitives explicitly to avoid matching predicates
+# like distance(...) or holding(...) inside constraint lines.
+_ACTION_KW = (
+    r"(?:reach|grasp|pick|lift|transport|place|push|pull|insert|pour|"
+    r"rotate|release|flip|wipe|open|close|press)"
+)
+_STEP_FALLBACK_DEST_RE = re.compile(
+    rf"\b({_ACTION_KW})\(\s*([^()]*?)\s*->\s*([^()]+?)\s*\)", re.I,
+)
+_STEP_FALLBACK_RE = re.compile(
+    rf"\b({_ACTION_KW})\(\s*([^()]*)\s*\)", re.I,
+)
+
 # Matches constraint lines: "category: pred(args) [role]; pred(args) [role]"
 _CONSTRAINT_CATEGORIES = {"contact", "spatial", "pose", "direction", "safety"}
 _CONSTRAINT_LINE_RE = re.compile(
@@ -232,8 +247,20 @@ def parse_planning_output(text: str) -> dict:
             o.strip() for o in scene_m.group(1).split(",") if o.strip()
         ]
 
-    # Split by "Step N:" markers
-    parts = re.split(r"(?=Step\s+\d+:)", text.strip())
+    # Primary split: "Step N:" markers. Fallback: action-keyword splits when
+    # the model collapsed the format (no Step prefix and/or no newlines).
+    primary_parts = re.split(r"(?=Step\s+\d+:)", text.strip())
+    has_step_header = any(
+        _STEP_DEST_RE.search(p) or _STEP_RE.search(p) for p in primary_parts
+    )
+    if has_step_header:
+        parts = primary_parts
+        use_fallback = False
+    else:
+        parts = re.split(rf"(?=\b{_ACTION_KW}\()", text.strip(), flags=re.I)
+        use_fallback = True
+
+    auto_step_num = 0
     for part in parts:
         part = part.strip()
         if not part:
@@ -241,19 +268,37 @@ def parse_planning_output(text: str) -> dict:
 
         step: dict = {"constraints": {}}
 
-        # Try destination pattern first: "action(target -> dest)"
-        m = _STEP_DEST_RE.search(part)
-        if m:
-            step["step"] = int(m.group(1))
-            step["action"] = m.group(2)
-            step["target"] = m.group(3).strip()
-            step["destination"] = m.group(4).strip()
-        else:
-            m = _STEP_RE.search(part)
+        if not use_fallback:
+            # Try destination pattern first: "Step N: action(target -> dest)"
+            m = _STEP_DEST_RE.search(part)
             if m:
                 step["step"] = int(m.group(1))
                 step["action"] = m.group(2)
                 step["target"] = m.group(3).strip()
+                step["destination"] = m.group(4).strip()
+            else:
+                m = _STEP_RE.search(part)
+                if m:
+                    step["step"] = int(m.group(1))
+                    step["action"] = m.group(2)
+                    step["target"] = m.group(3).strip()
+        else:
+            # Fallback: model dropped "Step N:" prefix. Match a leading
+            # action(target [-> dest]) and auto-number sequentially.
+            m = _STEP_FALLBACK_DEST_RE.match(part)
+            if m:
+                auto_step_num += 1
+                step["step"] = auto_step_num
+                step["action"] = m.group(1).lower()
+                step["target"] = m.group(2).strip()
+                step["destination"] = m.group(3).strip()
+            else:
+                m = _STEP_FALLBACK_RE.match(part)
+                if m:
+                    auto_step_num += 1
+                    step["step"] = auto_step_num
+                    step["action"] = m.group(1).lower()
+                    step["target"] = m.group(2).strip()
 
         if "step" not in step:
             continue
