@@ -180,6 +180,15 @@ def main():
                              "Single-image mode -> result_viz.png in --output_dir "
                              "(or alongside --image if no output_dir). "
                              "Batch mode -> <episode>_viz.png per episode.")
+    parser.add_argument("--refine-affordance", action="store_true",
+                        help="Two-stage inference: after the LoRA model emits "
+                             "the plan, disable the adapter and re-ground each "
+                             "step's affordance via the base RoboBrain pointing "
+                             "task on the step's affordance_hint. Empirically "
+                             "more accurate than asking LoRA to learn pointing "
+                             "jointly with plan structure. The original LoRA "
+                             "coordinate is kept under 'affordance_lora' for A/B. "
+                             "Only applies when --task=planning.")
     args = parser.parse_args()
 
     from inference_3dgs import UnifiedInference3DGS
@@ -214,6 +223,10 @@ def main():
 
             out = run_single(model, image, depth, text, args.task,
                              args.temperature, args.max_tokens)
+            if args.refine_affordance and args.task == "planning":
+                out["structured"] = model.refine_affordance_via_base(
+                    out["structured"], image,
+                )
             out["episode"] = ep_dir.name
             results.append(out)
 
@@ -240,6 +253,10 @@ def main():
         out = run_single(model, args.image, args.depth,
                          args.text or "describe the scene", args.task,
                          args.temperature, args.max_tokens)
+        if args.refine_affordance and args.task == "planning":
+            out["structured"] = model.refine_affordance_via_base(
+                out["structured"], args.image,
+            )
         results.append(out)
         print("\n" + json.dumps(out["structured"], indent=2, ensure_ascii=False))
 
