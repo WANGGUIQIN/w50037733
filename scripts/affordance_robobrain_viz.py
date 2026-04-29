@@ -147,7 +147,29 @@ def predict_points(model, image_path: str, queries: list) -> list:
     return results
 
 
-def render(image_path: str, results: list, output_path: str):
+# PIL formats indexed by lowercase extension. Anything outside this set
+# triggers "unknown file extension" inside Image.save() — fall back to PNG.
+_PIL_EXT_TO_FMT = {
+    ".png": "PNG", ".jpg": "JPEG", ".jpeg": "JPEG",
+    ".bmp": "BMP", ".tiff": "TIFF", ".tif": "TIFF", ".webp": "WEBP",
+}
+
+
+def _normalize_output_path(output_path: str) -> tuple:
+    """Return (Path, pil_format). If extension is missing or unrecognized,
+    coerce to .png to avoid 'unknown file extension' from PIL."""
+    out = Path(output_path)
+    fmt = _PIL_EXT_TO_FMT.get(out.suffix.lower())
+    if fmt is None:
+        if out.suffix:
+            out = out.with_suffix(".png")
+        else:
+            out = out.with_name(out.name + ".png")
+        fmt = "PNG"
+    return out, fmt
+
+
+def render(image_path: str, results: list, output_path: str) -> Path:
     img = Image.open(image_path).convert("RGB")
     w, h = img.size
     canvas = img.copy()
@@ -192,8 +214,10 @@ def render(image_path: str, results: list, output_path: str):
     draw.rectangle(bbox, fill="#000000bb")
     draw.text((4, 4), banner, fill="#ffffff", font=font)
 
-    Path(output_path).parent.mkdir(parents=True, exist_ok=True)
-    canvas.save(output_path)
+    out_path, fmt = _normalize_output_path(output_path)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    canvas.save(out_path, format=fmt)
+    return out_path
 
 
 def resolve_episode(ep_dir: Path, use_plan: bool):
@@ -284,9 +308,9 @@ def main():
         pt_str = f"[{pt[0]:.3f}, {pt[1]:.3f}]" if pt else "FAIL (parse)"
         print(f"  {i}. {r['query']:55s} -> {pt_str}")
 
-    render(image_path, results, out_path)
-    print(f"\nSaved viz:  {out_path}")
-    json_path = Path(out_path).with_suffix(".json")
+    saved_path = render(image_path, results, out_path)
+    print(f"\nSaved viz:  {saved_path}")
+    json_path = saved_path.with_suffix(".json")
     with open(json_path, "w") as f:
         json.dump(
             {"image": image_path, "model": args.model_path, "results": results},
