@@ -508,29 +508,31 @@ class UnifiedInference3DGS:
         self,
         plan: dict,
         image_path: str,
-        max_new_tokens: int = 64,
+        max_new_tokens: int = 128,
     ) -> dict:
         """For each plan step with `affordance_hint`, disable the LoRA adapter
-        and call the base RoboBrain pointing capability on the hint, then
+        and call the base RoboBrain `affordance` task on the hint, then
         overwrite `step["affordance"]` with the result. The original LoRA
         coordinate is preserved under `step["affordance_lora"]` for A/B.
 
         Rationale: LoRA jointly trained on plan + affordance has uneven
         gradient signal across the two sub-tasks; base RoboBrain's pretrained
-        pointing is empirically more accurate on idea-B templated queries.
-        Reuse that strength as a refinement pass instead of asking LoRA to
-        learn it from scratch.
+        `affordance` task -- specialised on manipulation data with normalised
+        [u, v] output -- is empirically more accurate on idea-B templated
+        queries than asking LoRA to learn the same grounding from scratch.
+        Reuse that strength as an inference-time refinement pass.
 
-        The 3D branch is bypassed during pointing (depth=None) because the
+        The 3D branch is bypassed during refinement (depth=None) because the
         GaussianEncoder was trained jointly with LoRA — feeding its tokens
         into a base-VLM forward would be a distribution mismatch.
 
         Args:
             plan: parsed plan dict with `steps` list. Each step may have
                   `affordance_hint` and `affordance` fields.
-            image_path: path to the RGB image used for pointing.
-            max_new_tokens: cap on pointing answer length (it is a short
-                            "[(x, y)]" tuple, so 64 tokens is plenty).
+            image_path: path to the RGB image used for grounding.
+            max_new_tokens: cap on affordance answer length (hint +
+                            affordance + gripper_width + approach typically
+                            fits in ~100 tokens).
 
         Returns:
             The mutated plan dict (same object).
@@ -542,14 +544,16 @@ class UnifiedInference3DGS:
 
         # Resolve the disable-adapter context. If no LoRA was ever loaded
         # (e.g. running base RoboBrain directly), use a no-op context so the
-        # refine pass still runs and at least re-grounds via the pointing
-        # template rather than the planning template.
+        # refine pass still runs and re-grounds via the affordance template
+        # rather than the planning template.
         if isinstance(self.model.vlm, PeftModel):
             adapter_ctx = self.model.vlm.disable_adapter()
-            print("Refining affordances via base model (LoRA disabled) ...")
+            print("Refining affordances via base model `affordance` task "
+                  "(LoRA disabled) ...")
         else:
             adapter_ctx = contextlib.nullcontext()
-            print("Refining affordances via pointing template (no LoRA loaded) ...")
+            print("Refining affordances via base `affordance` task "
+                  "(no LoRA loaded) ...")
 
         refined = 0
         with adapter_ctx:
@@ -557,31 +561,32 @@ class UnifiedInference3DGS:
                 hint = step.get("affordance_hint")
                 if not isinstance(hint, str) or not hint.strip():
                     continue
-                # 2D-only pointing: depth=None bypasses 3D branch.
+                # 2D-only affordance: depth=None bypasses 3D branch.
                 r = self.inference(
                     text=hint.strip(),
                     image=image_path,
                     depth=None,
-                    task="pointing",
+                    task="affordance",
                     do_sample=False,
                     temperature=0.0,
                     max_new_tokens=max_new_tokens,
                 )
-                # Pointing answer format: "[(x, y)]" with x, y in [0, 1000].
-                m = re.search(r"\(\s*(\d+)\s*,\s*(\d+)\s*\)", r["answer"])
-                if not m:
+                # The inference() method already runs parse_affordance_output
+                # and returns it under r["parsed"] when task=="affordance".
+                parsed = r.get("parsed") or {}
+                u, v = parsed.get("u"), parsed.get("v")
+                if not (isinstance(u, (int, float))
+                        and isinstance(v, (int, float))
+                        and 0.0 <= u <= 1.0 and 0.0 <= v <= 1.0):
                     continue
-                x, y = int(m.group(1)), int(m.group(2))
-                if not (0 <= x <= 1000 and 0 <= y <= 1000):
-                    continue
-                u, v = round(x / 1000.0, 4), round(y / 1000.0, 4)
                 # Preserve the LoRA-produced coord for A/B comparison.
                 if "affordance" in step:
                     step["affordance_lora"] = step["affordance"]
-                step["affordance"] = [u, v]
+                step["affordance"] = [round(float(u), 4), round(float(v), 4)]
                 refined += 1
 
-        print(f"  refined {refined}/{len(steps)} step(s) via base-model pointing")
+        print(f"  refined {refined}/{len(steps)} step(s) via base-model "
+              f"affordance task")
         return plan
 
     # ------------------------------------------------------------------
