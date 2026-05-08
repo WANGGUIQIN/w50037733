@@ -67,10 +67,14 @@ def refine_with_langsam(
 ) -> dict:
     """Apply Lang-SAM post-processor to a structured plan dict.
 
-    The original LoRA-emitted affordance is preserved under
-    'affordance_lora' (mirroring --refine-affordance) for A/B comparison.
+    Mirrors --refine-affordance semantics: the refined affordance overwrites
+    `step["affordance"]`, while the original LoRA-emitted value is preserved
+    under `step["affordance_lora"]` for A/B comparison. This makes
+    render_inference display the refined point by default. Steps where
+    refinement failed (no_mask without coarse-uv fallback) keep the
+    original `affordance` untouched.
     """
-    # Snapshot the lora-emitted coords before they get refined
+    # Snapshot the lora-emitted coords before refinement runs
     snapshot = copy.deepcopy(structured)
     for s in snapshot.get("steps", []):
         if "affordance" in s:
@@ -86,6 +90,16 @@ def refine_with_langsam(
                                [0, 0, 1]], dtype=np.float32)
 
     refined = refine_plan(rgb, depth, intrinsics, snapshot, grounder, strategy=strategy)
+
+    # Overwrite affordance with refined coords so render_inference picks them up.
+    # Skip when refinement produced nothing (no_mask without fallback).
+    for s in refined.get("steps", []):
+        new_aff = s.get("affordance_refined")
+        if new_aff is not None and s.get("refine_status") != "no_mask":
+            s["affordance"] = list(new_aff)
+        if s.get("approach_refined") and s.get("refine_status") == "ok":
+            s["approach"] = list(s["approach_refined"])
+
     return refined
 
 

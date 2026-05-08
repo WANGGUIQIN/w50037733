@@ -483,8 +483,10 @@ def visualize(episode_dir: Path, refined_plan: dict, out_path: Path, frame_idx: 
     fig, ax = plt.subplots(figsize=(8, 8))
     ax.imshow(rgb)
     for i, step in enumerate(refined_plan["steps"]):
-        # Original (auto-detect pixel vs normalized)
-        orig = step.get("affordance")
+        # Original (auto-detect pixel vs normalized).
+        # Prefer `affordance_lora` if present (set when refinement overwrote
+        # `affordance`), otherwise fall back to `affordance`.
+        orig = step.get("affordance_lora") or step.get("affordance")
         if orig is not None and len(orig) >= 2:
             uv = _normalize_uv(orig, W, H)
             if uv is not None:
