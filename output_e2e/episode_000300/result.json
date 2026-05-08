@@ -1,0 +1,327 @@
+{
+  "task": "take the steak off the grill",
+  "scene_objects": [
+    "grill",
+    "steak",
+    "spatula",
+    "table"
+  ],
+  "num_steps": 5,
+  "steps": [
+    {
+      "step": 1,
+      "action": "reach",
+      "target": "grill",
+      "affordance_hint": "the grill",
+      "affordance": [
+        0.612,
+        0.208
+      ],
+      "approach": [
+        0.0,
+        0.0,
+        -1.0
+      ],
+      "constraints": {
+        "contact": [
+          {
+            "pred": "gripper_state",
+            "args": [
+              "open"
+            ],
+            "role": "progress"
+          }
+        ],
+        "spatial": [
+          {
+            "pred": "distance",
+            "args": [
+              "gripper",
+              "grill",
+              "<",
+              "0.03"
+            ],
+            "role": "completion"
+          }
+        ]
+      },
+      "done_when": "distance(gripper, grill) < 0.03",
+      "affordance_lora": [
+        0.612,
+        0.208
+      ],
+      "refine_prompt": "grill, the grill",
+      "refine_cache_hit": false,
+      "affordance_refined": [
+        0.6328,
+        0.5977
+      ],
+      "affordance_3d_refined": [
+        0.7182,
+        0.5281,
+        2.7039
+      ],
+      "approach_refined": [
+        0.0,
+        0.0,
+        -1.0
+      ],
+      "refine_status": "ok",
+      "refine_strategy": "inscribed",
+      "refine_confidence": 0.4353
+    },
+    {
+      "step": 2,
+      "action": "grasp",
+      "target": "grill",
+      "affordance_hint": "the handle of the grill",
+      "affordance": [
+        0.612,
+        0.208
+      ],
+      "approach": [
+        0.0,
+        0.0,
+        -1.0
+      ],
+      "constraints": {
+        "contact": [
+          {
+            "pred": "holding",
+            "args": [
+              "grill"
+            ],
+            "role": "completion"
+          }
+        ],
+        "direction": [
+          {
+            "pred": "grasp_axis",
+            "args": [
+              "0",
+              "0",
+              "-1"
+            ],
+            "role": "safety"
+          }
+        ]
+      },
+      "done_when": "holding(grill)",
+      "affordance_lora": [
+        0.612,
+        0.208
+      ],
+      "refine_prompt": "grill, the handle of the grill",
+      "refine_cache_hit": false,
+      "affordance_refined": [
+        0.6328,
+        0.5977
+      ],
+      "affordance_3d_refined": [
+        0.7182,
+        0.5281,
+        2.7039
+      ],
+      "approach_refined": [
+        0.0,
+        0.0,
+        -1.0
+      ],
+      "refine_status": "ok",
+      "refine_strategy": "inscribed",
+      "refine_confidence": 0.3113
+    },
+    {
+      "step": 3,
+      "action": "pull",
+      "target": "grill",
+      "affordance_hint": "the steak on the grill",
+      "affordance": [
+        0.58,
+        0.185
+      ],
+      "approach": [
+        0.0,
+        0.0,
+        -1.0
+      ],
+      "constraints": {
+        "contact": [
+          {
+            "pred": "holding",
+            "args": [
+              "grill"
+            ],
+            "role": "progress"
+          }
+        ],
+        "spatial": [
+          {
+            "pred": "distance",
+            "args": [
+              "grill",
+              "steak",
+              "<",
+              "0.03"
+            ],
+            "role": "completion"
+          }
+        ]
+      },
+      "done_when": "distance(grill, steak) < 0.03",
+      "affordance_lora": [
+        0.58,
+        0.185
+      ],
+      "refine_prompt": "grill, the steak on the grill",
+      "refine_cache_hit": false,
+      "affordance_refined": [
+        0.6328,
+        0.5977
+      ],
+      "affordance_3d_refined": [
+        0.7182,
+        0.5281,
+        2.7039
+      ],
+      "approach_refined": [
+        0.0,
+        0.0,
+        -1.0
+      ],
+      "refine_status": "ok",
+      "refine_strategy": "inscribed",
+      "refine_confidence": 0.4364
+    },
+    {
+      "step": 4,
+      "action": "transport",
+      "target": "grill",
+      "destination": "table",
+      "affordance_hint": "an empty area on the table",
+      "affordance": [
+        0.6,
+        0.615
+      ],
+      "approach": [
+        0.0,
+        0.0,
+        -1.0
+      ],
+      "constraints": {
+        "spatial": [
+          {
+            "pred": "above",
+            "args": [
+              "grill",
+              "table",
+              "0.05"
+            ],
+            "role": "completion"
+          }
+        ],
+        "safety": [
+          {
+            "pred": "no_drop",
+            "args": [
+              "grill"
+            ],
+            "role": "safety"
+          }
+        ]
+      },
+      "done_when": "above(grill, table, 0.05)",
+      "affordance_lora": [
+        0.6,
+        0.615
+      ],
+      "refine_prompt": "grill, an empty area on the table",
+      "refine_cache_hit": false,
+      "affordance_refined": [
+        0.6328,
+        0.5977
+      ],
+      "affordance_3d_refined": [
+        0.7182,
+        0.5281,
+        2.7039
+      ],
+      "approach_refined": [
+        0.0,
+        0.0,
+        -1.0
+      ],
+      "refine_status": "ok",
+      "refine_strategy": "inscribed",
+      "refine_confidence": 0.3998
+    },
+    {
+      "step": 5,
+      "action": "place",
+      "target": "grill",
+      "destination": "table",
+      "affordance_hint": "an empty area on the table",
+      "affordance": [
+        0.6,
+        0.615
+      ],
+      "approach": [
+        0.0,
+        0.0,
+        -1.0
+      ],
+      "constraints": {
+        "contact": [
+          {
+            "pred": "surface_contact",
+            "args": [
+              "grill",
+              "table"
+            ],
+            "role": "completion"
+          },
+          {
+            "pred": "released",
+            "args": [
+              "grill"
+            ],
+            "role": "completion"
+          }
+        ],
+        "pose": [
+          {
+            "pred": "stable",
+            "args": [
+              "grill"
+            ],
+            "role": "completion"
+          }
+        ]
+      },
+      "done_when": "surface_contact(grill, table) AND released(grill)",
+      "affordance_lora": [
+        0.6,
+        0.615
+      ],
+      "refine_prompt": "grill, an empty area on the table",
+      "refine_cache_hit": true,
+      "affordance_refined": [
+        0.6328,
+        0.5977
+      ],
+      "affordance_3d_refined": [
+        0.7182,
+        0.5281,
+        2.7039
+      ],
+      "approach_refined": [
+        0.0,
+        0.0,
+        -1.0
+      ],
+      "refine_status": "ok",
+      "refine_strategy": "inscribed",
+      "refine_confidence": 0.3998
+    }
+  ]
+}

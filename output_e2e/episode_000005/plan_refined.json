@@ -1,0 +1,156 @@
+{
+  "task": "close the cyan jar",
+  "scene_objects": [
+    {
+      "name": "cyan jar",
+      "affordances": [
+        {
+          "type": "lid",
+          "affordance": [
+            0.35,
+            0.45
+          ]
+        }
+      ]
+    },
+    {
+      "name": "blue jar",
+      "affordances": [
+        {
+          "type": "lid",
+          "affordance": [
+            0.45,
+            0.45
+          ]
+        }
+      ]
+    },
+    {
+      "name": "gray object",
+      "affordances": []
+    }
+  ],
+  "num_steps": 3,
+  "steps": [
+    {
+      "step": 1,
+      "action": "reach",
+      "target": "cyan jar",
+      "affordance": [
+        0.35,
+        0.45
+      ],
+      "approach": [
+        0.0,
+        0.0,
+        0.8
+      ],
+      "constraints": {
+        "physical": {
+          "role": "approach",
+          "condition": "robot arm is not in contact with any object"
+        }
+      },
+      "done_when": "robot arm reaches the cyan jar",
+      "refine_prompt": "cyan jar, lid",
+      "refine_cache_hit": false,
+      "affordance_refined": [
+        0.3633,
+        0.7578
+      ],
+      "affordance_3d_refined": [
+        -0.6662,
+        1.2562,
+        2.4363
+      ],
+      "approach_refined": [
+        0.707,
+        0.0093,
+        -0.7071
+      ],
+      "refine_status": "ok",
+      "refine_strategy": "pca",
+      "refine_confidence": 0.3832
+    },
+    {
+      "step": 2,
+      "action": "grasp",
+      "target": "cyan jar",
+      "affordance": [
+        0.35,
+        0.45
+      ],
+      "approach": [
+        0.0,
+        0.0,
+        0.8
+      ],
+      "constraints": {
+        "physical": {
+          "role": "grasp",
+          "condition": "robot arm is in contact with the cyan jar's lid"
+        }
+      },
+      "done_when": "robot arm grasps the cyan jar's lid",
+      "refine_prompt": "cyan jar, lid",
+      "refine_cache_hit": true,
+      "affordance_refined": [
+        0.3633,
+        0.7578
+      ],
+      "affordance_3d_refined": [
+        -0.6662,
+        1.2562,
+        2.4363
+      ],
+      "approach_refined": [
+        0.707,
+        0.0093,
+        -0.7071
+      ],
+      "refine_status": "ok",
+      "refine_strategy": "pca",
+      "refine_confidence": 0.3832
+    },
+    {
+      "step": 3,
+      "action": "place",
+      "target": "cyan jar",
+      "affordance": [
+        0.35,
+        0.45
+      ],
+      "approach": [
+        0.0,
+        0.0,
+        0.8
+      ],
+      "constraints": {
+        "physical": {
+          "role": "place",
+          "condition": "robot arm is in contact with the cyan jar's lid"
+        }
+      },
+      "done_when": "cyan jar's lid is placed on the cyan jar",
+      "refine_prompt": "cyan jar, lid",
+      "refine_cache_hit": true,
+      "affordance_refined": [
+        0.3633,
+        0.7578
+      ],
+      "affordance_3d_refined": [
+        -0.6662,
+        1.2562,
+        2.4363
+      ],
+      "approach_refined": [
+        0.707,
+        0.0093,
+        -0.7071
+      ],
+      "refine_status": "ok",
+      "refine_strategy": "pca",
+      "refine_confidence": 0.3832
+    }
+  ]
+}

@@ -1,0 +1,9 @@
+{
+  "task": "close the red jar",
+  "image": "data/processed/rlbench/episode_000000/rgb_0.png",
+  "timings": {
+    "generation_s": 24.08,
+    "refinement_s": 0.59
+  },
+  "error": null
+}

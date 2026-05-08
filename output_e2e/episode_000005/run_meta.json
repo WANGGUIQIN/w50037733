@@ -1,0 +1,9 @@
+{
+  "task": "close the cyan jar",
+  "image": "data/processed/rlbench/episode_000005/rgb_0.png",
+  "timings": {
+    "generation_s": 20.51,
+    "refinement_s": 0.54
+  },
+  "error": null
+}

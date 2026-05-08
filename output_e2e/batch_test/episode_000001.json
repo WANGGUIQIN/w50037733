@@ -1,0 +1,264 @@
+{
+  "task": "close the green jar",
+  "scene_objects": [
+    "green_jar",
+    "purple_bottle",
+    "green_bottle",
+    "gray_bottle",
+    "table"
+  ],
+  "num_steps": 4,
+  "steps": [
+    {
+      "step": 1,
+      "action": "reach",
+      "target": "green_jar",
+      "affordance_hint": "the green jar",
+      "affordance": [
+        0.75,
+        0.75
+      ],
+      "approach": [
+        0.4,
+        0.0,
+        -1.0
+      ],
+      "constraints": {
+        "contact": [
+          {
+            "pred": "gripper_state",
+            "args": [
+              "open"
+            ],
+            "role": "progress"
+          }
+        ],
+        "spatial": [
+          {
+            "pred": "distance",
+            "args": [
+              "gripper",
+              "green_jar",
+              "<",
+              "0.03"
+            ],
+            "role": "completion"
+          }
+        ]
+      },
+      "done_when": "distance(gripper, green_jar) < 0.03",
+      "affordance_lora": [
+        0.75,
+        0.75
+      ],
+      "refine_prompt": "green jar, the green jar",
+      "refine_cache_hit": false,
+      "affordance_refined": [
+        0.9297,
+        0.8516
+      ],
+      "affordance_3d_refined": [
+        2.1597,
+        1.767,
+        2.5131
+      ],
+      "approach_refined": [
+        0.0,
+        0.0,
+        -1.0
+      ],
+      "refine_status": "ok",
+      "refine_strategy": "inscribed",
+      "refine_confidence": 0.4463
+    },
+    {
+      "step": 2,
+      "action": "grasp",
+      "target": "green_jar",
+      "affordance_hint": "the handle of the green jar",
+      "affordance": [
+        0.75,
+        0.75
+      ],
+      "approach": [
+        0.4,
+        0.0,
+        -1.0
+      ],
+      "constraints": {
+        "contact": [
+          {
+            "pred": "holding",
+            "args": [
+              "green_jar"
+            ],
+            "role": "completion"
+          }
+        ],
+        "direction": [
+          {
+            "pred": "grasp_axis",
+            "args": [
+              "0",
+              "0",
+              "-1"
+            ],
+            "role": "safety"
+          }
+        ]
+      },
+      "done_when": "holding(green_jar)",
+      "affordance_lora": [
+        0.75,
+        0.75
+      ],
+      "refine_prompt": "green jar, the handle of the green jar",
+      "refine_cache_hit": false,
+      "affordance_refined": [
+        0.9297,
+        0.8516
+      ],
+      "affordance_3d_refined": [
+        2.1597,
+        1.767,
+        2.5131
+      ],
+      "approach_refined": [
+        0.0,
+        0.0,
+        -1.0
+      ],
+      "refine_status": "ok",
+      "refine_strategy": "inscribed",
+      "refine_confidence": 0.5097
+    },
+    {
+      "step": 3,
+      "action": "rotate",
+      "target": "green_jar",
+      "affordance_hint": "the body of the green jar",
+      "affordance": [
+        0.75,
+        0.75
+      ],
+      "approach": [
+        0.4,
+        0.0,
+        -1.0
+      ],
+      "constraints": {
+        "contact": [
+          {
+            "pred": "holding",
+            "args": [
+              "green_jar"
+            ],
+            "role": "progress"
+          }
+        ],
+        "pose": [
+          {
+            "pred": "rotation",
+            "args": [
+              "green_jar",
+              "0.5"
+            ],
+            "role": "progress"
+          }
+        ]
+      },
+      "done_when": "rotation(green_jar, 0.5)",
+      "affordance_lora": [
+        0.75,
+        0.75
+      ],
+      "refine_prompt": "green jar, the body of the green jar",
+      "refine_cache_hit": false,
+      "affordance_refined": [
+        0.9297,
+        0.8516
+      ],
+      "affordance_3d_refined": [
+        2.1597,
+        1.767,
+        2.5131
+      ],
+      "approach_refined": [
+        0.0,
+        0.0,
+        -1.0
+      ],
+      "refine_status": "ok",
+      "refine_strategy": "inscribed",
+      "refine_confidence": 0.465
+    },
+    {
+      "step": 4,
+      "action": "place",
+      "target": "green_jar",
+      "destination": "table",
+      "affordance_hint": "an empty area on the table",
+      "affordance": [
+        0.55,
+        0.75
+      ],
+      "approach": [
+        0.4,
+        0.0,
+        -1.0
+      ],
+      "constraints": {
+        "contact": [
+          {
+            "pred": "surface_contact",
+            "args": [
+              "green_jar",
+              "table"
+            ],
+            "role": "completion"
+          },
+          {
+            "pred": "released",
+            "args": [
+              "green_jar"
+            ],
+            "role": "completion"
+          }
+        ],
+        "pose": [
+          {
+            "pred": "stable",
+            "args": [
+              "green_jar"
+            ],
+            "role": "completion"
+          }
+        ]
+      },
+      "done_when": "surface_contact(green_jar, table) AND released(green_jar)",
+      "affordance_lora": [
+        0.55,
+        0.75
+      ],
+      "refine_prompt": "green jar, an empty area on the table",
+      "refine_cache_hit": false,
+      "affordance_refined": [
+        0.4219,
+        0.9961
+      ],
+      "affordance_3d_refined": [
+        -0.3262,
+        2.0717,
+        2.088
+      ],
+      "approach_refined": [
+        0.0,
+        0.0,
+        -1.0
+      ],
+      "refine_status": "ok",
+      "refine_strategy": "inscribed",
+      "refine_confidence": 0.4727
+    }
+  ]
+}

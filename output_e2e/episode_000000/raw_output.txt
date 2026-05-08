@@ -1,0 +1,79 @@
+```json
+{
+  "task": "close the red jar",
+  "scene_objects": [
+    {
+      "name": "red_jar",
+      "affordances": [
+        {
+          "type": "lid",
+          "point": [333, 417]
+        }
+      ]
+    },
+    {
+      "name": "green_cylinder",
+      "affordances": [
+        {
+          "type": "lid",
+          "point": [333, 417]
+        }
+      ]
+    },
+    {
+      "name": "gray_cylinder",
+      "affordances": [
+        {
+          "type": "lid",
+          "point": [333, 417]
+        }
+      ]
+    }
+  ],
+  "num_steps": 3,
+  "steps": [
+    {
+      "step": 1,
+      "action": "reach",
+      "target": "red_jar",
+      "affordance": [333, 417],
+      "approach": [0.0, 0.0, 0.5],
+      "constraints": {
+        "physical": {
+          "role": "initiate",
+          "condition": "robot arm reaches the red jar"
+        }
+      },
+      "done_when": "robot arm is positioned above the red jar's lid"
+    },
+    {
+      "step": 2,
+      "action": "grasp",
+      "target": "red_jar",
+      "affordance": [333, 417],
+      "approach": [0.0, 0.0, 0.5],
+      "constraints": {
+        "physical": {
+          "role": "acquire",
+          "condition": "robot arm grasps the red jar's lid"
+        }
+      },
+      "done_when": "robot arm securely holds the red jar's lid"
+    },
+    {
+      "step": 3,
+      "action": "place",
+      "target": "red_jar",
+      "affordance": [333, 417],
+      "approach": [0.0, 0.0, 0.5],
+      "constraints": {
+        "physical": {
+          "role": "secure",
+          "condition": "robot arm places the red jar's lid on the jar"
+        }
+      },
+      "done_when": "red jar's lid is fully closed on the jar"
+    }
+  ]
+}
+```

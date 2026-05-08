@@ -1,0 +1,256 @@
+{
+  "task": "close the red jar",
+  "scene_objects": [
+    "red_jar",
+    "green_cylinder",
+    "gray_cylinder",
+    "table"
+  ],
+  "num_steps": 4,
+  "steps": [
+    {
+      "step": 1,
+      "action": "reach",
+      "target": "red_jar",
+      "affordance_hint": "the red jar",
+      "affordance": [
+        0.685,
+        0.45
+      ],
+      "approach": [
+        0.0,
+        0.0,
+        -1.0
+      ],
+      "constraints": {
+        "contact": [
+          {
+            "pred": "gripper_state",
+            "args": [
+              "open"
+            ],
+            "role": "progress"
+          }
+        ],
+        "spatial": [
+          {
+            "pred": "distance",
+            "args": [
+              "gripper",
+              "red_jar",
+              "<",
+              "0.03"
+            ],
+            "role": "completion"
+          }
+        ]
+      },
+      "done_when": "distance(gripper, red_jar) < 0.03",
+      "affordance_lora": [
+        0.685,
+        0.45
+      ],
+      "refine_prompt": "red jar, the red jar",
+      "refine_cache_hit": false,
+      "affordance_refined": [
+        0.4648,
+        0.6445
+      ],
+      "affordance_3d_refined": [
+        -0.148,
+        0.6083,
+        2.1046
+      ],
+      "approach_refined": [
+        0.0,
+        0.0,
+        -1.0
+      ],
+      "refine_status": "ok",
+      "refine_strategy": "inscribed",
+      "refine_confidence": 0.5517
+    },
+    {
+      "step": 2,
+      "action": "grasp",
+      "target": "red_jar",
+      "affordance_hint": "the handle of the red jar",
+      "affordance": [
+        0.685,
+        0.45
+      ],
+      "approach": [
+        0.0,
+        0.0,
+        -1.0
+      ],
+      "constraints": {
+        "contact": [
+          {
+            "pred": "holding",
+            "args": [
+              "red_jar"
+            ],
+            "role": "completion"
+          }
+        ],
+        "direction": [
+          {
+            "pred": "grasp_axis",
+            "args": [
+              "0",
+              "0",
+              "-1"
+            ],
+            "role": "safety"
+          }
+        ]
+      },
+      "done_when": "holding(red_jar)",
+      "affordance_lora": [
+        0.685,
+        0.45
+      ],
+      "refine_prompt": "red jar, the handle of the red jar",
+      "refine_cache_hit": false,
+      "affordance_refined": [
+        0.4648,
+        0.6445
+      ],
+      "affordance_3d_refined": [
+        -0.148,
+        0.6083,
+        2.1046
+      ],
+      "approach_refined": [
+        0.0,
+        0.0,
+        -1.0
+      ],
+      "refine_status": "ok",
+      "refine_strategy": "inscribed",
+      "refine_confidence": 0.7095
+    },
+    {
+      "step": 3,
+      "action": "rotate",
+      "target": "red_jar",
+      "affordance_hint": "the body of the red jar",
+      "affordance": [
+        0.685,
+        0.45
+      ],
+      "approach": [
+        0.0,
+        0.0,
+        -1.0
+      ],
+      "constraints": {
+        "contact": [
+          {
+            "pred": "gripped",
+            "args": [
+              "red_jar"
+            ],
+            "role": "progress"
+          }
+        ],
+        "pose": [
+          {
+            "pred": "orientation",
+            "args": [
+              "red_jar",
+              "0.000",
+              "0.000",
+              "0.000"
+            ],
+            "role": "progress"
+          }
+        ]
+      },
+      "done_when": "orientation(red_jar, 0.000, 0.000, 0.000)",
+      "affordance_lora": [
+        0.685,
+        0.45
+      ],
+      "refine_prompt": "red jar, the body of the red jar",
+      "refine_cache_hit": false,
+      "affordance_refined": [
+        0.4648,
+        0.6445
+      ],
+      "affordance_3d_refined": [
+        -0.148,
+        0.6083,
+        2.1046
+      ],
+      "approach_refined": [
+        0.0,
+        0.0,
+        -1.0
+      ],
+      "refine_status": "ok",
+      "refine_strategy": "inscribed",
+      "refine_confidence": 0.6408
+    },
+    {
+      "step": 4,
+      "action": "release",
+      "target": "red_jar",
+      "affordance_hint": "the red jar",
+      "affordance": [
+        0.685,
+        0.45
+      ],
+      "approach": [
+        0.0,
+        0.0,
+        -1.0
+      ],
+      "constraints": {
+        "contact": [
+          {
+            "pred": "released",
+            "args": [
+              "red_jar"
+            ],
+            "role": "completion"
+          }
+        ],
+        "pose": [
+          {
+            "pred": "stable",
+            "args": [
+              "red_jar"
+            ],
+            "role": "completion"
+          }
+        ]
+      },
+      "done_when": "released(red_jar) AND stable(red_jar)",
+      "affordance_lora": [
+        0.685,
+        0.45
+      ],
+      "refine_prompt": "red jar, the red jar",
+      "refine_cache_hit": true,
+      "affordance_refined": [
+        0.4648,
+        0.6445
+      ],
+      "affordance_3d_refined": [
+        -0.148,
+        0.6083,
+        2.1046
+      ],
+      "approach_refined": [
+        0.0,
+        0.0,
+        -1.0
+      ],
+      "refine_status": "ok",
+      "refine_strategy": "inscribed",
+      "refine_confidence": 0.5517
+    }
+  ]
+}

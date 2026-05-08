@@ -26,6 +26,8 @@ outputs/
 # Inference result images (binary)
 output_rlbench_planning/*/rgb_*.png
 output_bridge_planning/*/rgb_*.png
+output_e2e/*/rgb_*.png
+output_postprocess/*/rgb_*.png
 result/
 
 # Data archives (uploaded via rclone/gdrive, not git)
