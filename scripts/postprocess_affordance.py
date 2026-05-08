@@ -311,27 +311,32 @@ def _fix_approach(approach) -> tuple[float, float, float]:
 
 
 def _build_prompt(step: dict, scene_objects: list, plan_task: str) -> str:
-    """Construct grounding prompt from multiple signals.
+    """Construct grounding prompt for Lang-SAM.
 
-    Priority cascade:
-      1. affordance_hint (if present, training format)
-      2. scene_objects[name=target] enriched with affordance.type
-      3. step.target alone
-      4. fallback: plan.task
+    Priority:
+      1. affordance_hint — already a part-aware noun phrase like
+         "the handle of the red jar"; this is exactly what Lang-SAM needs
+         and using it alone gives the most precise mask.
+      2. scene_objects enrichment — only when hint is absent (e.g. the
+         inference output of base RoboBrain has scene_objects but no hint),
+         combine target with affordance.type for a coarser prompt.
+      3. step.target alone — last resort before plan.task.
+      4. plan.task — fallback.
     """
-    target = (step.get("target") or "").strip()
     hint = (step.get("affordance_hint") or "").strip()
+    if hint:
+        return hint
+
+    target = (step.get("target") or "").strip().replace("_", " ")
     parts: list[str] = []
-
     if target:
-        parts.append(target.replace("_", " "))
+        parts.append(target)
 
-    # Try inference-format scene_objects enrichment
     if scene_objects and target:
         for obj in scene_objects:
             if not isinstance(obj, dict):
                 continue
-            if obj.get("name") == target:
+            if (obj.get("name") or "").replace("_", " ") == target:
                 affs = obj.get("affordances") or []
                 for a in affs:
                     t = (a.get("type") or "").strip().replace("_", " ")
@@ -339,9 +344,6 @@ def _build_prompt(step: dict, scene_objects: list, plan_task: str) -> str:
                         parts.append(t)
                         break
                 break
-
-    if hint and hint.lower() not in (p.lower() for p in parts):
-        parts.append(hint)
 
     if not parts:
         parts.append(plan_task or "object")
@@ -482,28 +484,43 @@ def visualize(episode_dir: Path, refined_plan: dict, out_path: Path, frame_idx: 
     H, W = rgb.shape[:2]
     fig, ax = plt.subplots(figsize=(8, 8))
     ax.imshow(rgb)
+
+    # Group orig + refined points by pixel coordinate so repeated steps on
+    # the same target aren't drawn on top of each other. Concatenate step
+    # numbers in the annotation instead.
+    orig_groups: dict[tuple[int, int], list[int]] = {}
+    refined_groups: dict[tuple[int, int], tuple[list[int], bool]] = {}
     for i, step in enumerate(refined_plan["steps"]):
-        # Original (auto-detect pixel vs normalized).
-        # Prefer `affordance_lora` if present (set when refinement overwrote
-        # `affordance`), otherwise fall back to `affordance`.
+        step_num = step.get("step", i + 1)
         orig = step.get("affordance_lora") or step.get("affordance")
         if orig is not None and len(orig) >= 2:
             uv = _normalize_uv(orig, W, H)
             if uv is not None:
-                ax.scatter(uv[0] * W, uv[1] * H, c="red", s=140, marker="x",
-                           linewidths=3,
-                           label="orig (model)" if i == 0 else None)
-        # Refined (already normalized [0,1])
+                key = (int(round(uv[0] * W)), int(round(uv[1] * H)))
+                orig_groups.setdefault(key, []).append(step_num)
         if step.get("affordance_refined"):
             u, v = step["affordance_refined"]
+            key = (int(round(u * W)), int(round(v * H)))
             ok = step.get("refine_status") == "ok"
-            color = "lime" if ok else "orange"
-            ax.scatter(u * W, v * H, c=color, s=140, marker="o",
-                       edgecolors="black", linewidths=2,
-                       label="refined" if i == 0 else None)
-            ax.annotate(f"{step.get('step', i+1)}", (u * W, v * H),
-                        color="white", fontsize=10,
-                        ha="center", va="center", fontweight="bold")
+            existing = refined_groups.get(key, ([], True))
+            refined_groups[key] = (existing[0] + [step_num], existing[1] and ok)
+
+    legend_done = {"orig": False, "refined": False}
+    for (x, y), nums in orig_groups.items():
+        ax.scatter(x, y, c="red", s=140, marker="x", linewidths=3,
+                   label=None if legend_done["orig"] else "orig (model)")
+        legend_done["orig"] = True
+        ax.annotate(",".join(str(n) for n in sorted(nums)),
+                    (x + 8, y - 8), color="red", fontsize=8, fontweight="bold")
+    for (x, y), (nums, ok) in refined_groups.items():
+        color = "lime" if ok else "orange"
+        ax.scatter(x, y, c=color, s=140, marker="o",
+                   edgecolors="black", linewidths=2,
+                   label=None if legend_done["refined"] else "refined")
+        legend_done["refined"] = True
+        ax.annotate(",".join(str(n) for n in sorted(nums)),
+                    (x, y), color="white", fontsize=9,
+                    ha="center", va="center", fontweight="bold")
     ax.legend(loc="upper right")
     title = f"{episode_dir.name}: {refined_plan.get('task', '')}"
     ax.set_title(title)

@@ -114,15 +114,25 @@ def render(image_path: str | Path, structured: dict, task: str,
     drawn = 0
 
     if task == "planning":
+        # Group steps by pixel location so duplicates aren't drawn over each
+        # other. With prompt/mask caching in postprocess, multiple steps on
+        # the same target share an affordance — show them as one marker with
+        # combined step numbers ("1,3,4,5. <hint>") rather than stacked.
+        groups: dict[tuple[int, int], list[tuple[int, str, str, str]]] = {}
         for step_num, action, target, hint, (u, v) in _iter_planning_points(structured):
-            color = _STEP_COLORS[(step_num - 1) % len(_STEP_COLORS)]
             x, y = _norm_to_pixel(u, v, w, h)
-            # Prefer hint over (action,target) when present — it's the
-            # part-aware description and more useful for visual review.
+            groups.setdefault((x, y), []).append((step_num, action, target, hint))
+        for (x, y), entries in groups.items():
+            entries.sort(key=lambda e: e[0])
+            steps_str = ",".join(str(e[0]) for e in entries)
+            # Use the hint of the first step in the group; fall back to action(target)
+            first = entries[0]
+            hint = first[3]
             if hint:
-                label = f"{step_num}. {hint}"
+                label = f"{steps_str}. {hint}"
             else:
-                label = f"{step_num}.{action}({target})"
+                label = f"{steps_str}.{first[1]}({first[2]})"
+            color = _STEP_COLORS[(first[0] - 1) % len(_STEP_COLORS)]
             _draw_point(draw, x, y, color, label=label, font=font)
             drawn += 1
 
