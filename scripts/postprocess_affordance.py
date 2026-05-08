@@ -121,6 +121,25 @@ class AffordanceResult:
     confidence: float
 
 
+def _resize_depth_to(depth: np.ndarray | None, target_hw: tuple[int, int]) -> np.ndarray | None:
+    """Resize depth to target (H, W) using nearest-neighbor (preserves zeros)."""
+    if depth is None:
+        return None
+    if depth.shape[:2] == target_hw:
+        return depth
+    th, tw = target_hw
+    # use cv2 if available (faster); fall back to PIL nearest
+    try:
+        import cv2
+        return cv2.resize(depth.astype(np.float32), (tw, th),
+                          interpolation=cv2.INTER_NEAREST)
+    except Exception:
+        from PIL import Image as _PIL
+        return np.array(
+            _PIL.fromarray(depth.astype(np.float32)).resize((tw, th), _PIL.NEAREST)
+        )
+
+
 def _select_mask(
     masks: np.ndarray,
     scores: np.ndarray,
@@ -133,6 +152,9 @@ def _select_mask(
     if len(masks) == 0:
         return None
     H, W = masks.shape[1:]
+
+    # Align depth to mask resolution if provided
+    depth_aligned = _resize_depth_to(depth, (H, W))
 
     # 1. confidence filter
     keep = scores > score_thresh
@@ -152,10 +174,10 @@ def _select_mask(
             masks, scores = masks[contains], scores[contains]
 
     # 3. multiple remain: prefer foreground (smaller median depth)
-    if len(masks) > 1 and depth is not None:
+    if len(masks) > 1 and depth_aligned is not None:
         depths = []
         for m in masks:
-            d = depth[m & (depth > 0)]
+            d = depth_aligned[m & (depth_aligned > 0)]
             depths.append(np.median(d) if len(d) > 0 else np.inf)
         idx = int(np.argmin(depths))
         return masks[idx], float(scores[idx])
@@ -217,7 +239,8 @@ def extract_affordance(
     strategy: str = "inscribed",
     confidence: float = 1.0,
 ) -> AffordanceResult:
-    """mask: [H, W] bool, depth: [H, W] meters, intrinsics: [3, 3]."""
+    """mask: [H, W] bool, depth: [Hd, Wd] meters (any size; auto-aligned),
+    intrinsics: [3, 3] for the depth's original resolution."""
     H, W = mask.shape
     approach_3d = (0.0, 0.0, -1.0)
 
@@ -234,8 +257,20 @@ def extract_affordance(
     else:
         raise ValueError(f"Unknown strategy: {strategy}")
 
+    # Align depth + intrinsics to the mask's resolution before sampling
+    if depth is not None and depth.shape[:2] != (H, W):
+        Hd, Wd = depth.shape[:2]
+        depth = _resize_depth_to(depth, (H, W))
+        # Scale intrinsics so back-projection uses (u_px, v_px) at mask res
+        sx, sy = W / Wd, H / Hd
+        K = intrinsics.copy().astype(np.float32)
+        K[0, 0] *= sx; K[0, 2] *= sx
+        K[1, 1] *= sy; K[1, 2] *= sy
+    else:
+        K = intrinsics
+
     z = _depth_in_mask(mask, depth)
-    x, y, z = _backproject(u_px, v_px, z, intrinsics)
+    x, y, z = _backproject(u_px, v_px, z, K)
 
     return AffordanceResult(
         u=u_px / W,
