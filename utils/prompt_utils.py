@@ -45,23 +45,39 @@ PLANNING_SYSTEM_PROMPT = (
     "must land on the FUNCTIONAL PART of the relevant object, NOT its geometric "
     "center. The affordance_hint field is the natural-language description of "
     "that functional part — emit it BEFORE the [u, v] coordinate so the language "
-    "head conditions the visual head.\n"
-    "Action -> functional-part mapping:\n"
-    "  reach / release          -> the object itself\n"
-    "  grasp / pick / lift / pull / open / close -> the handle (or grip-able edge)\n"
-    "  place / transport        -> an empty area on the destination\n"
-    "  insert                   -> the top opening of the destination\n"
-    "  pour                     -> inside the destination\n"
-    "  push / press             -> the center of the contact face\n"
-    "  rotate / flip            -> the body of the object\n"
-    "  wipe                     -> the surface being wiped\n"
-    "Objects without a natural handle (towel, cloth, rag, block, cube, ball, "
-    "fruit, package, box, butter, sponge, paper, bread, cheese, egg, candy, "
-    "marker, battery, coin) get the affordance on their geometric center; "
-    "DO NOT invent a handle for them.\n"
-    "For destination-bearing actions (transport / place / insert / pour), the "
-    "affordance points at the DESTINATION, not the held object — this is a "
-    "common mistake to avoid.\n"
+    "head conditions the visual head.\n\n"
+    "HOW TO WRITE A GOOD affordance_hint (this hint is consumed by an "
+    "open-vocabulary visual grounding model, so it must be a SPECIFIC, "
+    "VISUALLY DISTINCTIVE noun phrase, never a template):\n"
+    "  1) LOOK AT THE OBJECT FIRST. Name a part that actually exists in the "
+    "image. NEVER invent a part that isn't there. A bowl has no handle — "
+    "write 'the rim of the red bowl', not 'the handle of the red bowl'. "
+    "A ball has no grip — write 'the body of the yellow ball'. A bottle "
+    "without a handle has a neck — write 'the neck of the green bottle'.\n"
+    "  2) ADD A DISCRIMINATIVE MODIFIER whenever the scene contains more "
+    "than one similar object. Pick from: color, material, position "
+    "(left/right/front/back/top), size, or relation to another object. "
+    "Examples of good hints:\n"
+    "     - 'the curved metal handle on the left side of the steel kettle'\n"
+    "     - 'the rim of the white ceramic mug closer to the camera'\n"
+    "     - 'the wooden grip of the chef knife next to the cutting board'\n"
+    "     - 'the empty area on the wooden tray between the two plates'\n"
+    "     - 'the top opening of the smaller glass jar'\n"
+    "  3) MATCH THE PART TO THE ACTION (guideline, not a closed mapping — "
+    "pick whichever grip-able feature is actually visible):\n"
+    "     - reach / release: the object itself or its main body\n"
+    "     - grasp / pick / lift / pull / open / close: a grip-able feature — "
+    "prefer handle / knob / lid-grip / neck / stem / spout if one exists, "
+    "otherwise the rim / edge / body. Do NOT default to 'the handle of X' "
+    "when X has no visible handle.\n"
+    "     - place / transport: an empty area on the destination surface\n"
+    "     - insert: the top opening or slot of the destination\n"
+    "     - pour: the inside / mouth of the destination container\n"
+    "     - push / press: the center of the contact face\n"
+    "     - rotate / flip: the body of the object\n"
+    "     - wipe: the surface being wiped\n"
+    "  4) FOR DESTINATION-BEARING ACTIONS (transport / place / insert / "
+    "pour) the hint describes the DESTINATION, not the held object.\n\n"
     "Coordinates [u, v] are normalized floats in [0.0, 1.0]. Never write "
     "0-1000 pixel coordinates."
 )
@@ -83,10 +99,15 @@ TASK_TEMPLATES = {
     "affordance": (
         "{text}. Please predict the affordance point and manipulation "
         "constraints for completing this task. First describe the semantic "
-        "part to interact with as 'affordance_hint: <part description>' "
-        "(e.g. 'the handle of the mug', 'the top opening of the rack peg'). "
-        "Then output the affordance coordinates as [u, v] in normalized image "
-        "space, gripper_width, and approach vector as [x, y, z]."
+        "part to interact with as 'affordance_hint: <part description>'. "
+        "The hint must be a specific, visually distinctive noun phrase — "
+        "name a part that actually exists on the object (do NOT invent a "
+        "handle on a handle-less object like a bowl, plate, or ball) and "
+        "include a discriminative modifier (color, material, position, or "
+        "relation to another object) whenever the scene has multiple "
+        "similar objects. Then output the affordance coordinates as [u, v] "
+        "in normalized image space, gripper_width, and approach vector as "
+        "[x, y, z]."
     ),
     # Pointing: RoboBrain2.5's pointing task (2D coordinate output)
     "pointing": (
@@ -113,11 +134,17 @@ TASK_TEMPLATES = {
         'Analyze the scene and plan the manipulation steps to complete the '
         'task: "{text}". For each step, provide: the operation primitive '
         '(reach/grasp/transport/place/push/pull/insert/pour/rotate/release/flip/wipe), '
-        'target object, affordance_hint (the semantic part to interact with, '
-        "e.g. 'the handle of the mug'), affordance point [u, v], approach "
+        'target object, affordance_hint, affordance point [u, v], approach '
         'direction [x, y, z], and constraints organized by category (contact, '
-        'spatial, pose, direction, safety) with role labels (completion, safety, '
-        'progress). Include a done_when completion condition for each step.'
+        'spatial, pose, direction, safety) with role labels (completion, '
+        'safety, progress). The affordance_hint must (a) name a part that '
+        'actually exists on the object — never invent a handle on a bowl, '
+        'plate, ball or other handle-less object; (b) include a '
+        'discriminative modifier (color, material, position, or relation to '
+        'another object) when the scene has multiple similar objects; '
+        '(c) avoid generic template phrases like "the handle of X" unless '
+        'X actually has a visible handle. Include a done_when completion '
+        'condition for each step.'
     ),
     # General VQA: pass through as-is
     "general": "{text}",
