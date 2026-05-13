@@ -224,6 +224,48 @@ def _depth_in_mask(mask: np.ndarray, depth: np.ndarray) -> float:
     return float(np.median(valid))
 
 
+def _filter_mask_by_depth_mode(
+    mask: np.ndarray,
+    depth: np.ndarray,
+    bin_size: float = 0.02,
+    min_keep_frac: float = 0.10,
+) -> tuple[np.ndarray, bool]:
+    """Restrict mask to its dominant depth peak.
+
+    SAM returns a filled silhouette for hollow objects (bowl/cup/jar). The
+    inner-hole pixels see straight through to the background surface, so the
+    mask's depth histogram becomes bimodal: a near peak (object surface) and a
+    far peak (table seen through the hole). The inscribed-circle / centroid
+    point picker then lands in the hole, and back-projection lifts it onto
+    the background plane — geometrically inside neither the object nor the
+    table. We keep only the pixels in the near peak's bin (+/- 1 neighbour).
+
+    Returns (refined_mask, filtered_flag). If filtering would discard more
+    than (1 - min_keep_frac) of the original mask, falls back to the input.
+    Same applies if depth is too uniform / too sparse to estimate a mode.
+    """
+    valid = mask & (depth > 0) & np.isfinite(depth)
+    if valid.sum() < 50:
+        return mask, False
+
+    d = depth[valid]
+    lo, hi = float(d.min()), float(d.max())
+    if hi - lo < bin_size * 2:
+        return mask, False
+
+    n_bins = max(8, int(np.ceil((hi - lo) / bin_size)))
+    hist, edges = np.histogram(d, bins=n_bins)
+    peak = int(hist.argmax())
+    lo_keep = edges[max(0, peak - 1)]
+    hi_keep = edges[min(len(edges) - 1, peak + 2)]
+
+    refined = np.zeros_like(mask)
+    refined[valid] = (d >= lo_keep) & (d <= hi_keep)
+    if refined.sum() < min_keep_frac * mask.sum():
+        return mask, False
+    return refined, True
+
+
 def _backproject(u_px: int, v_px: int, z: float, K: np.ndarray) -> tuple[float, float, float]:
     fx, fy = K[0, 0], K[1, 1]
     cx, cy = K[0, 2], K[1, 2]
@@ -238,38 +280,51 @@ def extract_affordance(
     intrinsics: np.ndarray,
     strategy: str = "inscribed",
     confidence: float = 1.0,
+    depth_filter: bool = True,
 ) -> AffordanceResult:
     """mask: [H, W] bool, depth: [Hd, Wd] meters (any size; auto-aligned),
-    intrinsics: [3, 3] for the depth's original resolution."""
+    intrinsics: [3, 3] for the depth's original resolution.
+
+    When depth_filter=True (default), the mask is restricted to its dominant
+    depth mode before point selection. This removes "see-through-the-hole"
+    pixels on concave objects (bowl/cup/jar) that would otherwise pull the
+    inscribed-circle point into the empty interior."""
     H, W = mask.shape
     approach_3d = (0.0, 0.0, -1.0)
 
+    # Align depth + intrinsics to the mask's resolution FIRST so the depth-
+    # mode filter and the point picker both operate in the same frame.
+    if depth is not None and depth.shape[:2] != (H, W):
+        Hd, Wd = depth.shape[:2]
+        depth_aligned = _resize_depth_to(depth, (H, W))
+        sx, sy = W / Wd, H / Hd
+        K = intrinsics.copy().astype(np.float32)
+        K[0, 0] *= sx; K[0, 2] *= sx
+        K[1, 1] *= sy; K[1, 2] *= sy
+    else:
+        depth_aligned = depth
+        K = intrinsics
+
+    # Drop hollow / see-through pixels before picking a point.
+    point_mask = mask
+    if depth_filter and depth_aligned is not None:
+        point_mask, _ = _filter_mask_by_depth_mode(mask, depth_aligned)
+
     if strategy == "centroid":
-        u_px, v_px = point_centroid(mask)
+        u_px, v_px = point_centroid(point_mask)
     elif strategy == "inscribed":
-        u_px, v_px = point_inscribed_circle(mask)
+        u_px, v_px = point_inscribed_circle(point_mask)
     elif strategy == "pca":
-        (u_px, v_px), approach_2d = point_pca(mask)
-        # lift 2D approach to 3D (z component pointing into the scene)
+        (u_px, v_px), approach_2d = point_pca(point_mask)
         approach_3d = (float(approach_2d[0]), float(approach_2d[1]), -1.0)
         norm = np.linalg.norm(approach_3d)
         approach_3d = tuple(c / norm for c in approach_3d)
     else:
         raise ValueError(f"Unknown strategy: {strategy}")
 
-    # Align depth + intrinsics to the mask's resolution before sampling
-    if depth is not None and depth.shape[:2] != (H, W):
-        Hd, Wd = depth.shape[:2]
-        depth = _resize_depth_to(depth, (H, W))
-        # Scale intrinsics so back-projection uses (u_px, v_px) at mask res
-        sx, sy = W / Wd, H / Hd
-        K = intrinsics.copy().astype(np.float32)
-        K[0, 0] *= sx; K[0, 2] *= sx
-        K[1, 1] *= sy; K[1, 2] *= sy
-    else:
-        K = intrinsics
-
-    z = _depth_in_mask(mask, depth)
+    # Depth median is taken on the same filtered mask so z matches the surface
+    # the (u, v) point actually sits on.
+    z = _depth_in_mask(point_mask, depth_aligned)
     x, y, z = _backproject(u_px, v_px, z, K)
 
     return AffordanceResult(
